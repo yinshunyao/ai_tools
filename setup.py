@@ -12,7 +12,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name = 'ai_tool',
-    version = '0.0.3',
+    version = '1.0',
     keywords = ('ai', 'tools', 'iou', 'picture slice'),
     description = 'compute the iou, slice picture etc.',
     long_description = long_description,

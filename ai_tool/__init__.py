@@ -4,4 +4,4 @@ Author：yinshunyao
 Date:2019/7/31 0031下午 7:44
 """
 name="ai_tool"
-__version__="0.0.2"
+__version__="1.0"
