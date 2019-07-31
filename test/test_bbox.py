@@ -25,6 +25,8 @@ class BBoxTest(unittest.TestCase):
         print('box1 S is', bbox1.S)
         print('box1 & box2', bbox1 & bbox2)
         print('box1 == box2', bbox1 == bbox2)
+        print('merge box1 + box2', bbox1 + bbox2)
+        print('merge box1 | box2', bbox1 | bbox2)
 
 
 class BBoxesTest(unittest.TestCase):

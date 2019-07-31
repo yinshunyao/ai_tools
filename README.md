@@ -36,6 +36,8 @@ assert iou > 0.5
 print('box1 S is', bbox1.S)
 print('box1 & box2', bbox1 & bbox2)
 print('box1 == box2', bbox1 == bbox2)
+print('merge box1 + box2', bbox1 + bbox2)
+print('merge box1 | box2', bbox1 | bbox2)
 ```
 
 
@@ -47,6 +49,8 @@ iou 0.5785714285714286
 box1 S is 10000
 box1 & box2 [11, 12, 101, 102]
 box1 == box2 True
+merge box1 + box2 [1, 2, 121, 122]
+merge box1 | box2 [1, 2, 121, 122]
 ```
 
 

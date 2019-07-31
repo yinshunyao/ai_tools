@@ -148,8 +148,8 @@ class BBox(list):
         if not other:
             return self
 
-        if self.__len__() < 6 or len(other) < 6:
-            raise Exception("BBox合并，左值和右值的元素个数必须大于等于6")
+        # if self.__len__() < 6 or len(other) < 6:
+        #     raise Exception("BBox合并，左值和右值的元素个数必须大于等于6")
 
         if not self.__eq__(other):
             raise Exception("not equal for bbox and other, cannot add")
@@ -161,6 +161,10 @@ class BBox(list):
         result[1] = min(self[1], other[1])
         result[2] = max(self[2], other[2])
         result[3] = max(self[3], other[3])
+
+        # 支持纯坐标合并
+        if self.__len__() <= 4:
+            return result
 
         # 按照置信度高度整合类别
         if self[5] >= other[5]:
