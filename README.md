@@ -6,7 +6,7 @@ ai tool
 # slice picture
 
 ```python
-from ai_tools.img_slide import yield_sub_img
+from ai_tool.img_slide import yield_sub_img
 # yield the sub image from the jpg
 for bbox, sub_img in yield_sub_img("test.jpg", 0, 0, 180, 60):
     clip = "-".join([str(x) for x in bbox])
