@@ -3,7 +3,7 @@ ai相关的一些工具类方法
 
 
 # 切图
-`yield_sub_img 提供yield的方式生成切片之后的子图
+yield_sub_img 提供yield的方式生成切片之后的子图
 
 ```python
 from img_slide import yield_sub_img
