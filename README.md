@@ -42,10 +42,12 @@ print('box1 == box2', bbox1 == bbox2)
 
 result is :
 
+```shell
 iou 0.5785714285714286
 box1 S is 10000
 box1 & box2 [11, 12, 101, 102]
 box1 == box2 True
+```
 
 
 
@@ -76,9 +78,11 @@ print("bb2 - bb1", bb2 - bb1)
 
 result is
 
+```shell
 [5, 5, 100, 100] in bb1 True
 [100, 5, 200, 100] in bb1 False
 bb1 & bb2 [[1, 2, 101, 102]]
 bb1 - bb2 [[1000, 2, 1101, 102]]
 bb2 - bb1 [[1, 1002, 101, 1102]]
+```
 
