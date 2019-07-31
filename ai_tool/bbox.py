@@ -4,7 +4,6 @@ Author：yinshunyao
 Date:2019/7/19 0019上午 9:35
 自定义bbox，定义两个bbox相等 和 merge等功能
 """
-import logging
 from copy import deepcopy
 
 class BBox(list):
