@@ -12,7 +12,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name = 'ai_tool',
-    version = '1.3',
+    version = '1.4',
     keywords = ('ai', 'tools', 'iou', 'picture slice'),
     description = 'compute the iou, slice picture etc.',
     long_description = long_description,
@@ -24,4 +24,13 @@ setup(
     packages = find_packages(),
     install_requires=["numpy", "opencv-python"],
     platforms = 'any',
+    classifiers = [
+        # "Development Status :: 5 - Production/Stable"
+        'Development Status :: 3 - Alpha',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7'
+    ]
 )

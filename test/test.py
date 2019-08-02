@@ -21,3 +21,8 @@ class ImgTest(unittest.TestCase):
             print("slide:{}".format(clip))
             cv2.imshow(clip, sub_img)
             cv2.waitKey(0)
+
+    def test_slide_para(self):
+        from ai_tool.img_slide import yield_sub_img
+        for box, img in yield_sub_img(None, 0, 0, 1400, 1400, 6576, 4384):
+            print(box[0], box[1], box[2] - box[0], box[3] - box[1])
