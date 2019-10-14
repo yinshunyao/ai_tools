@@ -4,6 +4,7 @@ Author：yinshunyao
 Date:2019/7/19 0019上午 9:35
 自定义bbox，定义两个bbox相等 和 merge等功能
 """
+import logging
 from copy import deepcopy
 
 class BBox(list):
@@ -17,7 +18,7 @@ class BBox(list):
     【/】 a / b 求两个bbox的iou，只需要四元组参数 x1, y1, x3, y3
     """
     
-    def __init__(self, *args, iou_thresh=0.5, cmp_with_bbox_name=False, cmp_with_bbox_type=False, **kwargs):
+    def __init__(self, *args, iou_thresh=0.5, cmp_with_bbox_name=False, **kwargs):
         """
         初始化BBOX，全量参数为x1, y1, x3, y3, class_name, confidence，至少要保证有4元组
         定义案例如下
@@ -33,7 +34,6 @@ class BBox(list):
         super(BBox, self).__init__(*args)
         self.iou_thresh = iou_thresh
         self.cmp_with_bbox_name = cmp_with_bbox_name
-        self.cmp_with_bbox_type = cmp_with_bbox_type
 
     def copy(self, *args, clear=False, **kwargs):
         """
@@ -44,7 +44,7 @@ class BBox(list):
         :return:
         """
         if clear:
-            return self.__class__(iou_thresh=self.iou_thresh, cmp_with_bbox_type=self.cmp_with_bbox_type, cmp_with_bbox_name=self.cmp_with_bbox_name)
+            return self.__class__(iou_thresh=self.iou_thresh, cmp_with_bbox_name=self.cmp_with_bbox_name)
         else:
             return deepcopy(self)
 
@@ -125,12 +125,12 @@ class BBox(list):
         if not isinstance(other, BBox):
             raise Exception("other必须是BBox类型")
 
-        # 需要判断名称是否相同，长度要够
-        if len(other) > 4 and self.__len__() > 4 and self.cmp_with_bbox_name and other[4] != self[4]:
+        # 空不比较
+        if not self or not other:
             return False
 
-        # 需要判断类型且类型是否也相同，长度要够
-        if len(other) > 6 and self.__len__() > 6 and self.cmp_with_bbox_type and other[6] != self[6]:
+        # 需要判断名称是否相同，长度要够
+        if len(other) > 4 and self.__len__() > 4 and self.cmp_with_bbox_name and other[4] != self[4]:
             return False
 
         # 比较iou
@@ -148,8 +148,8 @@ class BBox(list):
         if not other:
             return self
 
-        # if self.__len__() < 6 or len(other) < 6:
-        #     raise Exception("BBox合并，左值和右值的元素个数必须大于等于6")
+        if self.__len__() < 6 or len(other) < 6:
+            raise Exception("BBox合并，左值和右值的元素个数必须大于等于6")
 
         if not self.__eq__(other):
             raise Exception("not equal for bbox and other, cannot add")
@@ -161,10 +161,6 @@ class BBox(list):
         result[1] = min(self[1], other[1])
         result[2] = max(self[2], other[2])
         result[3] = max(self[3], other[3])
-
-        # 支持纯坐标合并
-        if self.__len__() <= 4:
-            return result
 
         # 按照置信度高度整合类别
         if self[5] >= other[5]:
@@ -180,20 +176,20 @@ class BBox(list):
 class BBoxes(list):
     """
     定义一组BBOX
+    元素为(1000, 210, 1100, 320, "test2", 0.9, ...)
     【-】 a - b 列表a中不在b中的元素
     【|】 a | b 列表a和列表b求并集，iou小于0.5的合并
     """
-    def __init__(self, *args, iou_thresh=0.5, cmp_with_bbox_name=False, cmp_with_bbox_type=True, **kwargs):
+    def __init__(self, *args, iou_thresh=0.5, cmp_with_bbox_name=True,  **kwargs):
         # 校验类型
         args = list(*args)
         for i in range(len(args)):
             if not isinstance(args[i], BBox):
                 # logging.warning("{}不是BBox类型，尝试强制转换，可能出错".format(args[i]))
-                args[i] = BBox(args[i], iou_thresh=iou_thresh, cmp_with_bbox_name=cmp_with_bbox_name, cmp_with_bbox_type=cmp_with_bbox_type)
+                args[i] = BBox(args[i], iou_thresh=iou_thresh, cmp_with_bbox_name=cmp_with_bbox_name)
         super(BBoxes, self).__init__(args)
         self.iou_thresh = iou_thresh
         self.cmp_with_bbox_name = cmp_with_bbox_name
-        self.cmp_with_bbox_type = cmp_with_bbox_type
         
     def append(self, *args, **kwargs):
         """
@@ -216,10 +212,10 @@ class BBoxes(list):
         # 如果类型不匹配，强制转换
         if not isinstance(arg, BBox):
             # logging.warning("{}不是BBox类型，尝试强制转换，可能出错".format(arg))
-            arg = BBox(arg, iou_thresh=self.iou_thresh, cmp_with_bbox_name=self.cmp_with_bbox_name, cmp_with_bbox_type=self.cmp_with_bbox_type)
+            arg = BBox(arg, iou_thresh=self.iou_thresh, cmp_with_bbox_name=self.cmp_with_bbox_name)
         super(BBoxes, self).append(arg)
 
-    def copy(self, *args, clear=True, **kwargs):
+    def copy(self, *args, clear=False, **kwargs):
         """
         复制结构参数
         :param args:
@@ -228,7 +224,7 @@ class BBoxes(list):
         :return:
         """
         if clear:
-            return self.__class__(iou_thresh=self.iou_thresh, cmp_with_bbox_type=self.cmp_with_bbox_type, cmp_with_bbox_name=self.cmp_with_bbox_name)
+            return self.__class__(iou_thresh=self.iou_thresh, cmp_with_bbox_name=self.cmp_with_bbox_name)
         else:
             return deepcopy(self)
 
@@ -242,14 +238,19 @@ class BBoxes(list):
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
 
-        result = self.copy()
+        result = []
         # 如果 other为空
         if not other:
-            return result
+            return self.copy()
+
+        # 如果self为空，返回对象
+        # if not self:
+        #     return []
 
         for item in self:
             if item not in other:
                 result.append(item)
+
         return result
 
     def __and__(self, other):
@@ -262,7 +263,7 @@ class BBoxes(list):
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
 
-        result = self.copy()
+        result = self.copy(clear=True)
         # 如果 other为空
         if not other:
             return result
@@ -302,8 +303,6 @@ class BBoxes(list):
         return result
 
 
-
-
 if __name__ == '__main__':
     # 定义bbox
     bbox1 = BBox((0, 0, 100, 100, "test1", 0.95))
@@ -337,6 +336,19 @@ if __name__ == '__main__':
     print("list2", list2)
     # delete算法
     print("delete算法：list1 - list2", list1 - list2)
+    print("copy for list1", list1.copy())
+
+    # delete算法
+    print("delete算法：list1 - list1", list1 - list1)
+
+    list_empty = BBoxes()
+    # delete算法
+    print("delete算法：list1 - list_empty", list1 - list_empty)
+
+    list_empty = BBoxes()
+    # delete算法
+    print("delete算法：list_empty - list1", list_empty - list1)
+
     # 添加 bbox5到list1中
     # list1.append(bbox5)
     list1.append((1000, 210, 1100, 320, "test2", 0.9))
