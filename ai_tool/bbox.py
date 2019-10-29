@@ -213,6 +213,7 @@ class BBoxes(list):
         if not isinstance(arg, BBox):
             # logging.warning("{}不是BBox类型，尝试强制转换，可能出错".format(arg))
             arg = BBox(arg, iou_thresh=self.iou_thresh, cmp_with_bbox_name=self.cmp_with_bbox_name)
+
         super(BBoxes, self).append(arg)
 
     def copy(self, *args, clear=False, **kwargs):
@@ -283,7 +284,7 @@ class BBoxes(list):
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
 
-        result = self.copy()
+        result = self.copy(clear=True)
         for item in self:
             for other_item in other:
                 # 如果是相同的框，合并
@@ -374,6 +375,27 @@ if __name__ == '__main__':
     print("b1.S", b1.S, "b2.S", b2.S)
     print(b1.S+b2.S-inter.S)
     print("iou for b1 and b2", b1 / b2)
+
+    # {"x1": "754.00", "x2": "946.00", "y1": "2415.00", "y2": "2680.00", "confidence": "1.00"}
+    # {"x1": "786.00", "x2": "952.00", "y1": "2408.00", "y2": "2677.00", "confidence": "1.00"}
+    b1 = BBox([754,2415,946,2680,1.0, "01010301"])
+    b2 = BBox([786,2408,952,2677,1.0, "01010301"])
+    print(b1==b2)
+    print(b1+b2)
+
+    # x1, y1, x3, y3, name, confidence, bbox_type
+    b1 = BBoxes()
+    bbox1 = BBox([1026,554, 1163, 1247, '01020102', 1.0, 0])
+    b1.append(bbox1)
+
+
+    b2 = BBoxes()
+    bbox2 = BBox([1025,708, 1158, 1227, '01020102', 1.0, 0])
+    b2.append(bbox2)
+
+    print('merge', b1 | b2)
+    print(bbox1 + bbox2)
+    print(bbox1 == bbox2)
 
 
 
