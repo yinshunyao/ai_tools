@@ -17,8 +17,8 @@ def yield_sub_img(img_path, start_x, start_y, sub_width, sub_height, WIDTH=0, HE
     :param img_path: 图片路径或者直接传递cv2读取的图片， 传递空或者None时，只处理参数
     :param start_x: x开始坐标
     :param start_y: y开始坐标
-    :param sub_width: 切片宽度
-    :param sub_height: 切片高度
+    :param sub_width: 切片宽度， 切片高或者宽为0，则整图返回
+    :param sub_height: 切片高度， 切片高或者宽为0，则整图返回
     :param padding: 是否padding
     :param WIDTH: 图片宽度，切图之前会计算宽度，因此切图时直接使用外部的宽度即可
     :param HEIGHT: 图片高度
@@ -42,6 +42,11 @@ def yield_sub_img(img_path, start_x, start_y, sub_width, sub_height, WIDTH=0, HE
     if not WIDTH or not HEIGHT:
         WIDTH = slide.shape[1]
         HEIGHT = slide.shape[0]
+
+    # 切片高或者宽为0，则整图返回
+    if not sub_height or not sub_width:
+        yield [0, 0, WIDTH, HEIGHT], slide
+        return
 
     x_list = []
     # 如果start_x不等于0，且不超过宽度，左边切片一列
