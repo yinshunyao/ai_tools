@@ -78,6 +78,24 @@ class BBox(list):
             return 0
         return (self.x2 - self.x1) * (self.y2 - self.y1)
 
+    def judge_by_edge(self, w, h, edge_distance_th=None, x_start=0, y_start=0, **kwargs):
+        """
+        到边框的判断
+        :param w:
+        :param h:
+        :param edge_distance_th: 为None的时候表明不需要判断
+        :param x_start:
+        :param y_start:
+        :return:
+        """
+        # 不需要判断
+        if edge_distance_th is None or not isinstance(edge_distance_th, (int, float)):
+            return True
+
+        # 需要判断
+        return self.x1 - x_start <= edge_distance_th  or w - self.x2 <= edge_distance_th \
+               or self.y1 - y_start or h - self.y2 < edge_distance_th
+
     def judge_by_geo(self, w_range=None, h_range=None, w_to_h_range=None, s_range=None, **kwargs):
         """
         图形几何条件判断

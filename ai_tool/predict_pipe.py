@@ -19,7 +19,7 @@ class predict_pipe(object):
     sub_model_list = []
 
     @classmethod
-    def load(cls, model, names, model_cfg: ModelConfigLoad, sub_model_list=None, between_main_sub_func=None, **kwargs):
+    def load(cls, model, model_cfg: ModelConfigLoad, sub_model_list=None, between_main_sub_func=None, **kwargs):
         """
         初始化模型的检测实体，一个进程里面最好只load一次，不要修改
         :param between_main_sub_func:  在主模型和子模型之间需要处理的函数
@@ -31,7 +31,7 @@ class predict_pipe(object):
         :return:
         """
         cls.model = model
-        cls.names = names
+        cls.names = model_cfg.names
         cls.sub_model_list = sub_model_list or []
         cls.model_cfg = model_cfg
         cls.debug = model_cfg.debug
@@ -250,7 +250,8 @@ class predict_pipe(object):
             vertice[3] = min(vertice[3], HEIGHT)
 
             # 几何参数判断
-            if self.model_cfg and not vertice.judge_by_geo(**self.model_cfg.bbox_geo_feature):
+            if self.model_cfg and (not vertice.judge_by_geo(**self.model_cfg.bbox_geo_feature)
+                                   or not vertice.judge_by_edge(WIDTH, HEIGHT, **self.model_cfg.bbox_geo_feature)):
                 # 不满足几何参数配置，返回
                 logging.warning("[{}]缺陷{}的几何参数不满足配置门限".format(self.model_cfg.model_type, vertice))
                 continue
@@ -276,10 +277,12 @@ class predict_pipe(object):
 
                 class_name, class_confidence = self._classify_sub_img(slide, vertice=vertice)
                 # class_confidence 约定大于99的场景下，表示杆号识别
-                if int(class_confidence) > 99:
+                if class_confidence and int(class_confidence) > 99:
                     defect['number'] = class_name
+                # 可能没有子模型
                 elif not class_name:
-                    logging.error("图片{}的{}区域子模型预测结果为空".format(tif_path, vertice))
+                    pass
+                    # logging.error("图片{}的{}区域子模型预测结果为空".format(tif_path, vertice))
                 else:
                     # 更新子模型分类，添加分类模型置信度
                     defect['name'] = class_name

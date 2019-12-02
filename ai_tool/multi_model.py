@@ -30,7 +30,7 @@ class MultiModel:
         # ai存数据库的置信度门限
         self.thresh_ai = model_cfg.thresh_ai
         # 初始化模型
-        predict_pipe.load(model=model, names=model.names, model_cfg=self.model_cfg, sub_model_list=sub_model_list, between_main_sub_func=between_main_sub_func)
+        predict_pipe.load(model=model, model_cfg=self.model_cfg, sub_model_list=sub_model_list, between_main_sub_func=between_main_sub_func)
         # 检测类型 merge 和 delete两种类型
         self.detect_type = model_cfg.detect_type
         # 切片宽度和高度

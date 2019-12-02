@@ -1,6 +1,8 @@
-# -*-coding:utf-8-*- 
-"""
-Author：yinshunyao
-Date:2019/7/31 0031下午 7:44
-"""
-name="ai_tool"
+#!/home/web/python/ai/bin/python2
+# -*- coding: utf-8 -*-
+# @Time    : 2019/8/7 9:44
+# @File    : __init__.py.py
+# @Software: PyCharm
+# @__title__ = ''
+# @__author__ = ZhaoHui
+

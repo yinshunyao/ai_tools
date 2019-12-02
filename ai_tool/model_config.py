@@ -25,7 +25,9 @@ class ModelConfigLoad(object):
         self.image_only = self.ini_config.get(MODEL_CFG, "OnlyImage", fallback="false").strip() == "true"
         # model文件
         self.model_file = os.path.join(self.model_path, self.ini_config.get(MODEL_CFG, MODEL_FILE, fallback=""))  # /data2/model/uring/mask_rcnn_4c_defect_0275.h5
-        self.name_class = os.path.join(self.model_path, self.ini_config.get(MODEL_CFG, MODEL_NAME, fallback=""))
+        # names 配置初始化
+        self.names = {}
+        self._load_names()
         # # 并发数 与 thread_max重复
         # self.concurrency = int(self.ini_config.get(MODEL_CFG, MODEL_CONCURRENCY, fallback=1))
         # 切片的长宽，默认值为0,表示不切片
@@ -67,6 +69,19 @@ class ModelConfigLoad(object):
         logging.warning("几何参数配置信息{}".format(self.bbox_geo_feature))
         logging.warning("配置文件读取完成")
 
+    def _load_names(self):
+        # 加载命名文件
+        with open(self.name_file, "r") as name_file:
+            index = 1
+            for line in name_file.readlines():
+                self.names[index] = line.strip()
+                index += 1
+            else:
+                pass
+
+        if not self.names:
+            raise Exception("mask-rcnn's name is null")
+
     def _load_sub_model_cfg(self, section_flag="sub_model_"):
         """
         加载子模型的配置，目前仅支持res50模型
@@ -102,13 +117,15 @@ class ModelConfigLoad(object):
         h_th_max = 620 # 高度最大阈值
         hw_ratio_th_min = 0.7 # 长宽比阈值
         hw_ratio_th_max = 1.95 # 长宽比阈值
+        edge_distance_th  # 到边缘的最短距离
         :return:
         """
         geo_params = {
             'w_range': None,
             'h_range': None,
             'w_to_h_range': None,
-            's_range': None
+            's_range': None,
+            'edge_distance_th': None
         }
         try:
             if SECTION_BBOX not in self.ini_config.sections():
@@ -127,6 +144,11 @@ class ModelConfigLoad(object):
             # 宽高比范围
             if 'hw_ratio_th_min' in params.keys() and 'hw_ratio_th_max' in params.keys():
                 geo_params['w_to_h_range'] = [float(params['hw_ratio_th_min']), float(params['hw_ratio_th_max'])]
+
+            # 到边框最小距离判断
+            if 'edge_distance_th' in params.keys():
+                geo_params['edge_distance_th'] = int(params['edge_distance_th'])
+
         except Exception as e:
             logging.warning("模型{}解析几何参数配置异常:{}".format(self.model_file, e), exc_info=1)
             raise Exception("配置加载失败")
