@@ -15,10 +15,10 @@ class ModelConfigLoad(object):
     def __init__(self, model_path):
         self.model_path = model_path
         # 构造ini配置文件绝对路径
-        ini_cfg_path = os.path.join(model_path, MODEL_CFG_FILE_NAME)  # /data2/model/uring/config.ini
-        logging.warning("load config from file:{}".format(ini_cfg_path))
+        self.ini_cfg_path = os.path.join(model_path, MODEL_CFG_FILE_NAME)  # /data2/model/uring/config.ini
+        logging.warning("load config from file:{}".format(self.ini_cfg_path))
         self.ini_config = ConfigParser()
-        self.ini_config.read(ini_cfg_path, encoding="utf-8")
+        self.ini_config.read(self.ini_cfg_path, encoding="utf-8")
         # 模型类型 unet或者其他
         self.model_type = self.ini_config.get(MODEL_CFG, "Type")
         # 传递给模型的是否是图片，或者文件路径
@@ -45,6 +45,10 @@ class ModelConfigLoad(object):
         self.black_list = [item.strip() for item in self.ini_config.get(MODEL_CFG, "black_list", fallback="").split(",") if not not item.strip()]
         logging.warning("模型黑名单配置：{}".format(self.black_list))
 
+        self.white_list = [item.strip() for item in self.ini_config.get(MODEL_CFG, "white_list", fallback="").split(",")
+                           if not not item.strip()]
+        logging.warning("模型白名单配置：{}".format(self.white_list))
+
         # 配置是否去掉边缘不完整器件出的框
         self.edge = bool((self.ini_config.get(MODEL_CFG, "edge", fallback="false")).lower() == "true")
         logging.warning("模型去除边缘不完整器件框配置：{}".format(self.edge))
@@ -61,13 +65,50 @@ class ModelConfigLoad(object):
         self.sub_model_cfg = []
         self._load_sub_model_cfg()
 
-        # 进入子模型之前扩展像素
-        self.padding_pixel = int(self.ini_config.get(MODEL_CFG, "padding_pixel", fallback=0))
+        # 进入子模型之前扩展像素，可能配置一个值，也可能配置四个值，兼容
+        self.padding_pixel = [int(item) for item in self.ini_config.get(MODEL_CFG, "padding_pixel", fallback="0").split(",")]
+        if len(self.padding_pixel) < 4:
+            self.padding_pixel = self.padding_pixel * 4
 
         # 几何参数特征构造
         self.bbox_geo_feature = self._get_bbox_geo_params()
         logging.warning("几何参数配置信息{}".format(self.bbox_geo_feature))
+        self.bbox_geo_feature_for_name = {}
+        self._load_bbox_geo_params_dict()
+        logging.warning("不同类型的几何参数配置信息{}".format(self.bbox_geo_feature_for_name))
+
+        # centernet 网络专用参数
+        self.centernet_params = self._load_centernet_params()
+
+        # top框参数配置，例如杆号 需要返回 方差最大的 top5 号牌框，默认-1表示不筛选
+        self.bbox_top = int(self.ini_config.get(MODEL_CFG, "bbox_top", fallback=-1))
         logging.warning("配置文件读取完成")
+
+    def _load_centernet_params(self):
+        """加载centernet模型参数"""
+        centernet_params = {
+            'default_resolution': [512, 512],
+            'mean': [.0, .0, .0],
+            'std': [.0, .0, .0],
+            'dataset': '',
+            'num_classes': 0,
+        }
+        if SECTION_CENTERNET not in self.ini_config.sections():
+            return centernet_params
+
+        params = dict(self.ini_config.items(SECTION_CENTERNET))
+        if 'default_resolution' in params.keys():
+            centernet_params['default_resolution'] = [int(item) for item in params['default_resolution'].split(",")]
+        if 'mean' in params.keys():
+            centernet_params['mean'] = [float(item) for item in params['mean'].split(",")]
+        if 'std' in params.keys():
+            centernet_params['std'] = [float(item) for item in params['std'].split(",")]
+        if 'dataset' in params.keys():
+            centernet_params['dataset'] = str(params['dataset'])
+        if 'num_classes' in params.keys():
+            centernet_params['num_classes'] = int(params['num_classes'])
+
+        return centernet_params
 
     def _load_names(self):
         # 加载命名文件
@@ -104,11 +145,33 @@ class ModelConfigLoad(object):
             # 更新为绝对路径
             config_params.update({
                 MODEL_CFG: os.path.join(self.model_path, config_params[MODEL_CFG]),
-                MODEL_NAME: os.path.join(self.model_path, config_params[MODEL_NAME])
+                MODEL_NAME: os.path.join(self.model_path, config_params[MODEL_NAME]),
+                "detect_name": config_params.get("detect_name", "")
             })
             self.sub_model_cfg.append(config_params)
 
-    def _get_bbox_geo_params(self):
+    def _load_bbox_geo_params_dict(self, section_flag="bbox_"):
+        """
+        加载 bbo
+        :param section_flag:
+        :return:
+        """
+        for section_name in self.ini_config.sections():
+            """符合条件的几何参数"""
+            if section_name.startswith(section_flag):
+                geo_params = self._get_bbox_geo_params(section_name)
+                logging.warning("解析{}的几何参数".format(section_name))
+                # 按照主模型的框的名称来筛选参数
+                detect_name = geo_params.pop('detect_name', "")
+                if not detect_name:
+                    logging.error("{}文件的{}配置必须携带detect_name配置".format(self.ini_cfg_path, section_name))
+                    continue
+
+                self.bbox_geo_feature_for_name[detect_name] = geo_params
+
+
+
+    def _get_bbox_geo_params(self, section_name=SECTION_BBOX):
         """
         bbox几何参数配置，构造参数字典，供bbox中judge_by_geo使用
         w_th_min = 40 # 宽度最小阈值
@@ -121,20 +184,27 @@ class ModelConfigLoad(object):
         :return:
         """
         geo_params = {
+            # 检测出框名字，例如杆号2C模型出的框name分为 ganhao 和 ganhao_v， 判断
+            'detect_name': None,
             'w_range': None,
             'h_range': None,
-            'w_to_h_range': None,
+            'h_to_w_range': None,
             's_range': None,
             'edge_distance_th': None
         }
         try:
-            if SECTION_BBOX not in self.ini_config.sections():
+            if section_name not in self.ini_config.sections():
                 return geo_params
 
-            params = dict(self.ini_config.items(SECTION_BBOX))
+            params = dict(self.ini_config.items(section_name))
             for k, v in params.items():
                 if isinstance(v, str):
                     params[k] = v.strip()
+
+            # detect_name 检测名称
+            if 'detect_name' in params.keys():
+                geo_params['detect_name'] = params['detect_name']
+
             # 宽度范围
             if 'w_th_min' in params.keys() and 'w_th_max' in params.keys():
                 geo_params['w_range'] = [float(params['w_th_min']), float(params['w_th_max'])]
@@ -143,7 +213,7 @@ class ModelConfigLoad(object):
                 geo_params['h_range'] = [float(params['h_th_min']), float(params['h_th_max'])]
             # 宽高比范围
             if 'hw_ratio_th_min' in params.keys() and 'hw_ratio_th_max' in params.keys():
-                geo_params['w_to_h_range'] = [float(params['hw_ratio_th_min']), float(params['hw_ratio_th_max'])]
+                geo_params['h_to_w_range'] = [float(params['hw_ratio_th_min']), float(params['hw_ratio_th_max'])]
 
             # 到边框最小距离判断
             if 'edge_distance_th' in params.keys():
@@ -215,9 +285,11 @@ class ModelConfigLoad(object):
 
 if __name__ == '__main__':
     from GTAI.resnet50.config import Config
-    model_config = ModelConfigLoad("/data2/model/bm")
+    model_config = ModelConfigLoad("/data2/model/ganhao_2c")
     print("black_list", model_config.black_list)
     print("子模型配置", model_config.sub_model_cfg)
+
+    print("centernet配置", model_config.centernet_params)
 
     print("params", model_config.update_config_items)
     cfg = Config(**model_config.sub_model_cfg[0])

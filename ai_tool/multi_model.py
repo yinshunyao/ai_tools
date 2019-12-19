@@ -11,13 +11,18 @@ from GTUtility.GTTools.model_config import ModelConfigLoad
 
 
 class MultiModel:
-    def __init__(self, model_cfg, model=None, sub_model_list=None, between_main_sub_func=None):
+    def __init__(self, model_cfg, model=None,
+                 sub_model_dict=None, sub_model_list=None,
+                 verify_after_main_model=None, need_sub_model_detect=None,
+                 handle_for_result=None,
+                 **kwargs):
         """
 
         :param model_cfg:
         :param model: 主模型可以直接传递进来
+        :param sub_model_dict: 子模型字典，key 配置为 上一个模型输出的name，符合这个name 则需要检测
         :param sub_model_list: 子模型可以直接传递进来
-        :param between_main_sub_func:  在主模型和子模型之间需要处理的函数
+        :param verify_after_main_model:  在主模型和子模型之间需要处理的函数，处理的是缺陷列表，x1, y1, x2, y2, class_name, confidence
         """
         if not isinstance(model_cfg, ModelConfigLoad):
             raise Exception("model must cfg  in type ModelConfigLoad, but type {}".format(type(model_cfg)))
@@ -30,7 +35,13 @@ class MultiModel:
         # ai存数据库的置信度门限
         self.thresh_ai = model_cfg.thresh_ai
         # 初始化模型
-        predict_pipe.load(model=model, model_cfg=self.model_cfg, sub_model_list=sub_model_list, between_main_sub_func=between_main_sub_func)
+        predict_pipe.load(model=model, model_cfg=self.model_cfg,
+                          sub_model_dict=sub_model_dict,
+                          sub_model_list=sub_model_list,
+                          verify_after_main_model=verify_after_main_model,
+                          need_sub_model_detect=need_sub_model_detect,
+                          handle_for_result=handle_for_result
+                          )
         # 检测类型 merge 和 delete两种类型
         self.detect_type = model_cfg.detect_type
         # 切片宽度和高度

@@ -11,6 +11,8 @@ from copy import deepcopy
 # 2、同一器件同种类别完全被包含的框消除，同一器件不同类别被包含的框保留置信度大的
 # 3、不同器件被包含的框保留
 
+DEFALT_IOU_THRESH = 0.5
+DEFAULT_INTER_THRESH = 0.5
 
 class BBox(list):
     """
@@ -23,7 +25,7 @@ class BBox(list):
     【/】 a / b 求两个bbox的iou，只需要四元组参数 x1, y1, x3, y3
     """
     
-    def __init__(self, *args, iou_thresh=0.5, **kwargs):
+    def __init__(self, *args, iou_thresh=DEFALT_IOU_THRESH, intersection_thresh=DEFAULT_INTER_THRESH, **kwargs):
         """
         初始化BBOX，全量参数为x1, y1, x3, y3, class_name, confidence，至少要保证有4元组
         定义案例如下
@@ -66,6 +68,23 @@ class BBox(list):
 
         # iou门限
         self.iou_thresh = iou_thresh
+        self.intersection_thresh = intersection_thresh
+
+    @property
+    def w(self):
+        return self.x2 - self.x1
+
+    @property
+    def h(self):
+        return self.y2 - self.y1
+
+    @property
+    def hTow(self):
+        """
+        宽和高的比例
+        :return:
+        """
+        return self.h/self.w if self.w > 0 else -1
 
     @property
     def S(self):
@@ -76,7 +95,7 @@ class BBox(list):
         # 面积0场景
         if self.x2 <= self.x1 or self.y2 <= self.y1:
             return 0
-        return (self.x2 - self.x1) * (self.y2 - self.y1)
+        return self.w * self.h
 
     def judge_by_edge(self, w, h, edge_distance_th=None, x_start=0, y_start=0, **kwargs):
         """
@@ -93,16 +112,16 @@ class BBox(list):
             return True
 
         # 需要判断
-        return self.x1 - x_start <= edge_distance_th  or w - self.x2 <= edge_distance_th \
-               or self.y1 - y_start or h - self.y2 < edge_distance_th
+        return not (self.x1 - x_start <= edge_distance_th  or w - self.x2 <= edge_distance_th
+               or self.y1 - y_start <= edge_distance_th or h - self.y2 <= edge_distance_th)
 
-    def judge_by_geo(self, w_range=None, h_range=None, w_to_h_range=None, s_range=None, **kwargs):
+    def judge_by_geo(self, w_range=None, h_range=None, h_to_w_range=None, s_range=None, **kwargs):
         """
         图形几何条件判断
         :param h_range:  高度范围
         :param w_range:
         :param s_range: 面积区间，闭区间
-        :param w_to_h_range: 纵横比，长边与短边比例关系
+        :param h_to_w_range: 纵横比，高除以宽
         :param kwargs:
         :return:
         """
@@ -110,20 +129,16 @@ class BBox(list):
         if isinstance(s_range, (tuple, list)) and len(s_range) >= 2 and not (s_range[0] <= self.S <= s_range[1]):
             return False
 
-        # 长和宽判断
-        w = self.x2 - self.x1
-        h = self.y2 - self.y1
-
         # 宽度范围判断
-        if isinstance(w_range, (tuple, list)) and len(w_range) >= 2 and not (w_range[0] <= w <= w_range[1]):
+        if isinstance(w_range, (tuple, list)) and len(w_range) >= 2 and not (w_range[0] <= self.w <= w_range[1]):
             return False
 
         # 高度范围判断
-        if isinstance(h_range, (tuple, list)) and len(h_range) >= 2 and not (h_range[0] <= h <= h_range[1]):
+        if isinstance(h_range, (tuple, list)) and len(h_range) >= 2 and not (h_range[0] <= self.h <= h_range[1]):
             return False
 
         # 纵横比判断
-        if isinstance(w_to_h_range, (tuple, list)) and len(w_to_h_range) >= 2 and not (w_to_h_range[0] <= w/h <= w_to_h_range[1]):
+        if isinstance(h_to_w_range, (tuple, list)) and len(h_to_w_range) >= 2 and not (h_to_w_range[0] <= self.hTow<= h_to_w_range[1]):
             return False
 
         return True
@@ -178,12 +193,37 @@ class BBox(list):
         # 交叠区域面积除以面积总和
         return inter.S / (self.S + other.S - inter.S)
 
+    def __floordiv__(self, other):
+        """
+        同器件同类别框，计算面积小的框与交集面积的比例
+        :param other:
+        :return:
+        """
+        if not isinstance(other, BBox):
+            raise Exception("other必须是BBox类型")
+
+        # 任意一个面积为0，返回0
+        if not self.S or not other.S:
+            return 0
+
+        # 交集框
+        inter = self & other
+        # 没有交集
+        if not inter:
+            return 0
+        # 交叠区域面积除以较小的面积
+        # print(inter.S / min(self.S, other.S))
+        return inter.S / min(self.S, other.S)
+
     def __le__(self, other):
         """
         判断方框包含在另外一个框里面
         :param other:
         :return:
         """
+        if self.intersection_thresh is not None:
+            return self.__floordiv__(other) >= self.intersection_thresh
+
         return self.x1 >= other.x1 and self.y1 >= other.y1 and self.x2 <= other.x2 and self.y2 <= other.y2
 
     """bbox自定义列表"""
@@ -289,18 +329,16 @@ class BBoxes(list):
     【-】 a - b 列表a中不在b中的元素
     【|】 a | b 列表a和列表b求并集，iou小于0.5的合并
     """
-    def __init__(self, *args, iou_thresh=0.5, **kwargs):
+    def __init__(self, *args, iou_thresh=DEFALT_IOU_THRESH, intersection_thresh=DEFAULT_INTER_THRESH, **kwargs):
         # 校验类型
         args = list(*args)
         for i in range(len(args)):
             if not isinstance(args[i], BBox):
                 # logging.warning("{}不是BBox类型，尝试强制转换，可能出错".format(args[i]))
-                args[i] = BBox(args[i], iou_thresh=iou_thresh, **kwargs)
+                args[i] = BBox(args[i], iou_thresh=iou_thresh, intersection_thresh=intersection_thresh, **kwargs)
         super(BBoxes, self).__init__(args)
         self.iou_thresh = iou_thresh
-        # 几何判断参数
-        self.s_range = kwargs.get("s_range", None)
-        self.w_to_h = kwargs.get("w_to_h", None)
+        self.intersection_thresh = intersection_thresh
         
     def append(self, *args, **kwargs):
         """
@@ -323,7 +361,7 @@ class BBoxes(list):
         # 如果类型不匹配，强制转换
         if not isinstance(arg, BBox):
             # logging.warning("{}不是BBox类型，尝试强制转换，可能出错".format(arg))
-            arg = BBox(arg, iou_thresh=self.iou_thresh)
+            arg = BBox(arg, iou_thresh=self.iou_thresh, intersection_thresh=self.intersection_thresh)
 
         # # 几何参数过滤 todo 待算法确定细节
         # if not arg.judge_by_geo(s_range=self.s_range, w_to_h=self.w_to_h):
@@ -421,124 +459,154 @@ class BBoxes(list):
 
 if __name__ == '__main__':
     # BBox逻辑判断
-    assert BBox((1, 1, 100, 100, "1", 0.5, "type1")) == BBox((20, 20, 100, 100, "1", 0.5, "type1")), "类型相同，IOU满足条件相等"
-    # 同一器件同种类别完全被包含的框消除
-    t = BBox((1, 1, 100, 100, "1", 0.5, "type1")) + BBox((20, 20, 100, 100, "1", 0.5, "type1"))
-    assert t.x1 == 1 and t.y1 == 1, "类型相同，IOU满足条件相等"
+    # assert BBox((1, 1, 100, 100, "1", 0.5, "type1")) == BBox((20, 20, 100, 100, "1", 0.5, "type1")), "类型相同，IOU满足条件相等"
+    # # 同一器件同种类别完全被包含的框消除
+    # t = BBox((1, 1, 100, 100, "1", 0.5, "type1")) + BBox((20, 20, 100, 100, "1", 0.5, "type1"))
+    # assert t.x1 == 1 and t.y1 == 1, "类型相同，IOU满足条件相等"
+    #
+    # assert BBox((1, 1, 100, 100, "1", 0.6, "type1")) == BBox((20, 20, 101, 101, "2", 0.5, "type1")), "类型相同，名称不同，IOU满足条件"
+    # # 同一器件同种类别完全被包含的框消除
+    # t = BBox((1, 2, 100, 100, "1", 0.6, "type1")) + BBox((20, 20, 101, 102, "2", 0.5, "type1"))
+    # assert t.x1 == 1 and t.y1 == 2 and t.x2 == 101 and t.y2 == 102, "类型相同，名称不同，IOU满足条件{}".format(t)
+    #
+    # assert BBox((0, 0, 100, 100, "1", 0.5, "type1")) != BBox((90, 90, 100, 100, "1", 0.5, "type2")), "类型不相同，包含"
+    # assert BBox((0, 0, 100, 100, "1", 0.5, "type1")) != BBox((20, 20, 101, 101, "1", 0.5, "type2")), "类型不相同，IoU满足，不包含"
+    # assert BBox((0, 0, 100, 100, "1", 0.5, "type1")) != BBox((90, 90, 120, 120, "1", 0.5, "type1")), "类型相同，IoU不满足"
+    #
+    # # 同一器件同种类别完全被包含的框消除
+    # assert BBox((0, 0, 100, 100, "1", 0.5, "type1")) == BBox((90, 90, 100, 100, "1", 0.5, "type1")), "同一器件同种类别完全被包含的框消除"
+    # t = BBox((0, 0, 100, 100, "1", 0.5, "type1")) + BBox((90, 90, 100, 100, "1", 0.6, "type1"))
+    # print("同一器件同种类别完全被包含的框消除", t)
+    # assert t.x1 == 0 and t.y1 == 0 and t.confidence == 0.6, "同一器件同种类别完全被包含的框消除"
+    #
+    # t = BBox((0, 0, 100, 100, "1", 0.5, "type1")) + BBox((90, 90, 100, 100, "2", 0.9, "type1"))
+    # assert t.x1 == 90 and t.y1 == 90 and t.confidence == 0.9, "同一器件不同类别被包含的框保留置信度大的"
+    #
+    # t = BBox((0, 0, 100, 100, "1", 0.9, "type1")) + BBox((90, 90, 100, 100, "2", 0.5, "type1"))
+    # assert t.x1 == 0 and t.y1 == 0 and t.confidence == 0.9, "同一器件不同类别被包含的框保留置信度大的"
+    #
+    # # 定义bbox
+    # bbox1 = BBox((0, 0, 100, 100, "test1", 0.95))
+    # print("bbox1", bbox1)
+    # bbox2 = BBox((0, 0, 100, 120, "test2", 0.9))
+    # print("bbox2", bbox2)
+    #
+    # bbox3 = BBox((200, 200, 300, 300, "test1", 0.8))
+    # bbox4 = BBox((210, 210, 320, 320, "test2", 0.9))
+    # bbox5 = BBox((1000, 210, 1100, 320, "test2", 0.9))
+    #
+    # #  不同的框，不考虑类型和名称
+    # assert bbox1 != bbox3, "bbox1 != bbox3"
+    #
+    # # 比较名字不相等
+    # bbox1.cmp_with_bbox_name = True
+    # assert  bbox1 != bbox2, "bbox1 == bbox2 with name"
+    # # 忽略名字相等
+    # bbox1.cmp_with_bbox_name = False
+    #
+    # # iou
+    # print("iou for bbox1 and bbox2", bbox1 / bbox2)
+    # print("iou for bbox2 and bbox5", bbox2 / bbox5)
+    # print("iou for bbox4 and bbox5", bbox4 / bbox5)
+    #
+    # # 定义bbox列表
+    # list1 = BBoxes([bbox1, bbox3])
+    # list2 = BBoxes([bbox2, bbox4])
+    # print("list1", list1)
+    # print("list2", list2)
+    # # delete算法
+    # print("delete算法：list1 - list2", list1 - list2)
+    # print("copy for list1", list1.copy())
+    #
+    # # delete算法
+    # print("delete算法：list1 - list1", list1 - list1)
+    #
+    # list_empty = BBoxes()
+    # # delete算法
+    # print("delete算法：list1 - list_empty", list1 - list_empty)
+    #
+    # list_empty = BBoxes()
+    # # delete算法
+    # print("delete算法：list_empty - list1", list_empty - list1)
+    #
+    # # 添加 bbox5到list1中
+    # # list1.append(bbox5)
+    # list1.append((1000, 210, 1100, 320, "test2", 0.9))
+    # print("list1", list1)
+    # print("list2", list2)
+    # print("delete算法：list1 - list2", list1 - list2)
+    # # merge算法
+    # print("merge算法：list1 | list2", list1 | list2)
+    #
+    # print("bbox1 | bbox2", bbox1 | bbox2)
+    #
+    # # 缺陷匹配
+    # b1 = BBox([100, 0, 220, 220, 'test1', 0.95, 'abnormal'],)
+    # b2 = BBox([100, 0, 200, 200, 'test2', 0.95, 'abnormal'],)
+    # assert b1 == b2, "正确缺陷匹配"
+    #
+    # # 缺陷匹配
+    # b1 = BBox([4906, 3846, 5132, 4064, 'test1', 0.95, 'abnormal'], iou_thresh=0.8)
+    # b2 = BBox([4942, 3820, 5273, 4051, 'test2', 0.95, 'abnormal'], iou_thresh=0.8)
+    # print("b1 == b2", b1 == b2)
+    # inter = b1&b2
+    # print("b1&b2", inter, inter.S)
+    # print("b1.S", b1.S, "b2.S", b2.S)
+    # print(b1.S+b2.S-inter.S)
+    # print("iou for b1 and b2", b1 / b2)
+    #
+    # # {"x1": "754.00", "x2": "946.00", "y1": "2415.00", "y2": "2680.00", "confidence": "1.00"}
+    # # {"x1": "786.00", "x2": "952.00", "y1": "2408.00", "y2": "2677.00", "confidence": "1.00"}
+    # b1 = BBox([754,2415,946,2680,1.0, "01010301"])
+    # b2 = BBox([786,2408,952,2677,1.0, "01010301"])
+    # print(b1==b2)
+    # print(b1+b2)
+    #
+    # # x1, y1, x3, y3, name, confidence, bbox_type
+    # b1 = BBoxes()
+    # bbox1 = BBox([1026,554, 1163, 1247, '01020102', 1.0, 0])
+    # b1.append(bbox1)
+    #
+    #
+    # b2 = BBoxes()
+    # bbox2 = BBox([1025,708, 1158, 1227, '01020102', 1.0, 0])
+    # b2.append(bbox2)
+    #
+    # print('merge', b1 | b2)
+    # print(bbox1 + bbox2)
+    # print(bbox1 == bbox2)
 
-    assert BBox((1, 1, 100, 100, "1", 0.6, "type1")) == BBox((20, 20, 101, 101, "2", 0.5, "type1")), "类型相同，名称不同，IOU满足条件"
-    # 同一器件同种类别完全被包含的框消除
-    t = BBox((1, 2, 100, 100, "1", 0.6, "type1")) + BBox((20, 20, 101, 102, "2", 0.5, "type1"))
-    assert t.x1 == 1 and t.y1 == 2 and t.x2 == 101 and t.y2 == 102, "类型相同，名称不同，IOU满足条件{}".format(t)
 
-    assert BBox((0, 0, 100, 100, "1", 0.5, "type1")) != BBox((90, 90, 100, 100, "1", 0.5, "type2")), "类型不相同，包含"
-    assert BBox((0, 0, 100, 100, "1", 0.5, "type1")) != BBox((20, 20, 101, 101, "1", 0.5, "type2")), "类型不相同，IoU满足，不包含"
-    assert BBox((0, 0, 100, 100, "1", 0.5, "type1")) != BBox((90, 90, 120, 120, "1", 0.5, "type1")), "类型相同，IoU不满足"
+    vertices = BBoxes()
+    b1 = BBoxes([[3233, 3480, 3474, 3812, 'pemissing1', 0.59], [3233, 3480, 3474, 3812, 'penormal1', 0.47]])
+    # b1.append([875, 692, 1316, 1118, 'capmissing', 0.66])
+    vertices = vertices | b1
+    # b2 = BBoxes([[3214, 3478, 3467, 3488, 'penormal1', 0.31]])
+    # vertices = vertices | b2
+    b3 = BBoxes([[3214, 3478, 3467, 3488, 'penormal1', 0.31], [3236, 3500, 3471, 3811, 'pemissing1', 0.45], [3236, 3500, 3471, 3811, 'penormal1', 0.61]])
+    vertices = vertices | b3
+    print("merge", vertices)
 
-    # 同一器件同种类别完全被包含的框消除
-    assert BBox((0, 0, 100, 100, "1", 0.5, "type1")) == BBox((90, 90, 100, 100, "1", 0.5, "type1")), "同一器件同种类别完全被包含的框消除"
-    t = BBox((0, 0, 100, 100, "1", 0.5, "type1")) + BBox((90, 90, 100, 100, "1", 0.6, "type1"))
-    print("同一器件同种类别完全被包含的框消除", t)
-    assert t.x1 == 0 and t.y1 == 0 and t.confidence == 0.6, "同一器件同种类别完全被包含的框消除"
+    print(b3 | b1)
 
-    t = BBox((0, 0, 100, 100, "1", 0.5, "type1")) + BBox((90, 90, 100, 100, "2", 0.9, "type1"))
-    assert t.x1 == 90 and t.y1 == 90 and t.confidence == 0.9, "同一器件不同类别被包含的框保留置信度大的"
-
-    t = BBox((0, 0, 100, 100, "1", 0.9, "type1")) + BBox((90, 90, 100, 100, "2", 0.5, "type1"))
-    assert t.x1 == 0 and t.y1 == 0 and t.confidence == 0.9, "同一器件不同类别被包含的框保留置信度大的"
-
-    # 定义bbox
-    bbox1 = BBox((0, 0, 100, 100, "test1", 0.95))
-    print("bbox1", bbox1)
-    bbox2 = BBox((0, 0, 100, 120, "test2", 0.9))
-    print("bbox2", bbox2)
-
-    bbox3 = BBox((200, 200, 300, 300, "test1", 0.8))
-    bbox4 = BBox((210, 210, 320, 320, "test2", 0.9))
-    bbox5 = BBox((1000, 210, 1100, 320, "test2", 0.9))
-
-    #  不同的框，不考虑类型和名称
-    assert bbox1 != bbox3, "bbox1 != bbox3"
-
-    # 比较名字不相等
-    bbox1.cmp_with_bbox_name = True
-    assert  bbox1 != bbox2, "bbox1 == bbox2 with name"
-    # 忽略名字相等
-    bbox1.cmp_with_bbox_name = False
-
-    # iou
-    print("iou for bbox1 and bbox2", bbox1 / bbox2)
-    print("iou for bbox2 and bbox5", bbox2 / bbox5)
-    print("iou for bbox4 and bbox5", bbox4 / bbox5)
-
-    # 定义bbox列表
-    list1 = BBoxes([bbox1, bbox3])
-    list2 = BBoxes([bbox2, bbox4])
-    print("list1", list1)
-    print("list2", list2)
-    # delete算法
-    print("delete算法：list1 - list2", list1 - list2)
-    print("copy for list1", list1.copy())
-
-    # delete算法
-    print("delete算法：list1 - list1", list1 - list1)
-
-    list_empty = BBoxes()
-    # delete算法
-    print("delete算法：list1 - list_empty", list1 - list_empty)
-
-    list_empty = BBoxes()
-    # delete算法
-    print("delete算法：list_empty - list1", list_empty - list1)
-
-    # 添加 bbox5到list1中
-    # list1.append(bbox5)
-    list1.append((1000, 210, 1100, 320, "test2", 0.9))
-    print("list1", list1)
-    print("list2", list2)
-    print("delete算法：list1 - list2", list1 - list2)
-    # merge算法
-    print("merge算法：list1 | list2", list1 | list2)
-
-    print("bbox1 | bbox2", bbox1 | bbox2)
-
-    # 缺陷匹配
-    b1 = BBox([100, 0, 220, 220, 'test1', 0.95, 'abnormal'],)
-    b2 = BBox([100, 0, 200, 200, 'test2', 0.95, 'abnormal'],)
-    assert b1 == b2, "正确缺陷匹配"
-
-    # 缺陷匹配
-    b1 = BBox([4906, 3846, 5132, 4064, 'test1', 0.95, 'abnormal'], iou_thresh=0.8)
-    b2 = BBox([4942, 3820, 5273, 4051, 'test2', 0.95, 'abnormal'], iou_thresh=0.8)
-    print("b1 == b2", b1 == b2)
-    inter = b1&b2
-    print("b1&b2", inter, inter.S)
-    print("b1.S", b1.S, "b2.S", b2.S)
-    print(b1.S+b2.S-inter.S)
-    print("iou for b1 and b2", b1 / b2)
-
-    # {"x1": "754.00", "x2": "946.00", "y1": "2415.00", "y2": "2680.00", "confidence": "1.00"}
-    # {"x1": "786.00", "x2": "952.00", "y1": "2408.00", "y2": "2677.00", "confidence": "1.00"}
-    b1 = BBox([754,2415,946,2680,1.0, "01010301"])
-    b2 = BBox([786,2408,952,2677,1.0, "01010301"])
-    print(b1==b2)
-    print(b1+b2)
-
-    # x1, y1, x3, y3, name, confidence, bbox_type
-    b1 = BBoxes()
-    bbox1 = BBox([1026,554, 1163, 1247, '01020102', 1.0, 0])
-    b1.append(bbox1)
+    # b = BBox([2158, 2825, 2233, 2892, 'capnormal', 0.9660947])
+    # print("bbox", b)
+    # print("几何参数judge_by_geo比对", b.judge_by_geo(w_range=(50, 280), h_range=(50, 280), h_to_w_range=(0.6, 1.35)))
+    # print("几何参数judge_by_edge比对", b.judge_by_edge(w=4920, h=3280, edge_distance_th=15))
 
 
-    b2 = BBoxes()
-    bbox2 = BBox([1025,708, 1158, 1227, '01020102', 1.0, 0])
-    b2.append(bbox2)
+    b1 = BBoxes( [[3233, 3480, 3474, 3812, 'pemissing1', 0.59], [3233, 3480, 3474, 3812, 'penormal1', 0.47]])
+    b2 = BBoxes([[3214, 3478, 3467, 3488, 'penormal1', 0.31], [3236, 3500, 3471, 3811, 'pemissing1', 0.45], [3236, 3500, 3471, 3811, 'penormal1', 0.61]])
+    print(b1 | b2)
+    print(b2 | b1)
 
-    print('merge', b1 | b2)
-    print(bbox1 + bbox2)
-    print(bbox1 == bbox2)
+    print('bbox merge', BBox([3236, 3500, 3471, 3811, 'penormal1', 0.61]) | BBox([3233, 3480, 3474, 3812, 'pemissing1', 0.59]))
 
+    print('sus merge',
+          BBox([156, 2690, 689, 3321, '01010601', 0.78]) | BBox([155.00, 2621.00, 694.00, 3316.00, '0307', 0.68]))
 
+    # print('sus floordiv',
+    #       BBox([1352, 1072, 1407, 1621, 'susnormal', 0.39]) // BBox([1352, 1399, 1389, 1623, 'susnormal', 0.15]))
 
 
 

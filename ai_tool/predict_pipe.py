@@ -13,31 +13,68 @@ from GTUtility.GTTools.model_config import ModelConfigLoad
 class predict_pipe(object):
     # model提取为类公共变量
     model = None
+    model_cfg = None
     names = []
     debug = False
     # 子模型列表
     sub_model_list = []
 
     @classmethod
-    def load(cls, model, model_cfg: ModelConfigLoad, sub_model_list=None, between_main_sub_func=None, **kwargs):
+    def load(cls, model, model_cfg: ModelConfigLoad,
+             sub_model_dict=None, sub_model_list=None,
+             verify_after_main_model=None,
+             need_sub_model_detect=None,
+             handle_for_result=None,
+             **kwargs):
         """
         初始化模型的检测实体，一个进程里面最好只load一次，不要修改
-        :param between_main_sub_func:  在主模型和子模型之间需要处理的函数
+        :param verify_after_main_model:  在主模型和子模型之间需要处理的函数
         :param model:  模型本身
         :param names: 对象列表
-        :param sub_model_list: 对象列表
+        :param sub_model_dict: 子模型字典，key为主模型输出的name，对应需要检测
+        :param sub_model_list: 对象列表，如果没有配置key，则尝试所有子模型
         :param model_cfg: 模型配置传递进来
-        :param debug: 是否调试模式
+        :param verify_after_main_model: 主模型校验 verify_after_main_model(obj: predict_pipe, img, bboxes)
+        :param need_sub_model_detect: 传入的方法，判断是否需要子模型检测
+        :param handle_for_result: 结果的后处理方法 handle_for_result(obj: predict_pipe, img, bboxes)
         :return:
         """
         cls.model = model
         cls.names = model_cfg.names
+        cls.sub_model_dict = sub_model_dict or {}
         cls.sub_model_list = sub_model_list or []
         cls.model_cfg = model_cfg
         cls.debug = model_cfg.debug
         cls.edge = model_cfg.edge
         cls.thread_max = model_cfg.thread_max
-        cls.between_main_sub_func = between_main_sub_func
+        # 钩子，主模型检测之后，判断一下，主模型结果是否合法
+        cls.verify_after_main_model = verify_after_main_model
+        # 钩子，子模型检测判断，不检测以主模型结果为准
+        cls.need_sub_model_detect = need_sub_model_detect
+        # 钩子，后处理
+        cls.post_handle_for_result = handle_for_result
+
+    @classmethod
+    def _judge_by_bbox_geo_feature(cls, vertice: BBox, WIDTH, HEIGHT):
+        """
+        bbox判断几何参数是否合理
+        :param vertice: bbox框
+        :param WIDTH:
+        :param HEIGHT:
+        :return: True 表示合法  False表示非法
+        """
+        # 几何参数判断
+        # name判断
+        if vertice.class_name in cls.model_cfg.bbox_geo_feature_for_name.keys():
+            geo_params = cls.model_cfg.bbox_geo_feature_for_name[vertice.class_name]
+        else:
+            geo_params = cls.model_cfg.bbox_geo_feature
+
+        if geo_params and (not vertice.judge_by_geo(**geo_params)
+                              or not vertice.judge_by_edge(WIDTH, HEIGHT, **geo_params)):
+            return False
+        else:
+            return True
 
     @classmethod
     def _detect_sub_img(cls, box, img, thresh, WIDTH, HEIGHT, edge=False):
@@ -73,12 +110,21 @@ class predict_pipe(object):
                     class_name = cls.names[class_id]
 
                 # 如果需要去除边缘框
-                if edge and  (defect['x1'] <= 0 or defect['y1'] <= 0 or defect['x2'] >= WIDTH or defect['y2'] >=HEIGHT):
+                if edge and (defect['x1'] <= 0 or defect['y1'] <= 0 or defect['x2'] >= WIDTH or defect['y2'] >=HEIGHT):
                     logging.warning("缺陷{}的坐标{}靠近子图片边缘{}".format(class_name, defect, box))
                     continue
 
+                vertice = BBox([defect['x1'] + box[0], defect['y1'] + box[1], defect['x2'] + box[0], defect['y2'] + box[1], class_name, defect['confidence']])
+                # 几何参数判断
+                if not cls._judge_by_bbox_geo_feature(vertice=vertice, WIDTH=WIDTH, HEIGHT=HEIGHT):
+                    # 不满足几何参数配置，返回
+                    logging.warning(
+                        "[{}]缺陷{}的几何参数w:{}, h:{} , hTow:{}不满足配置门限".format(cls.model_cfg.model_type, vertice, vertice.w,
+                                                                  vertice.h, vertice.hTow))
+                    continue
+
                 # append能够自动转换成自定义的BBox列表
-                vertices.append([defect['x1'] + box[0], defect['y1'] + box[1], defect['x2'] + box[0], defect['y2'] + box[1], class_name, defect['confidence']])
+                vertices.append(vertice)
                 # 合并
                 # boxes = BBoxes([[x0, y0, x1, y1, class_name, confidence], ])
                 # vertices = vertices | boxes
@@ -175,16 +221,30 @@ class predict_pipe(object):
 
         return self.vertices
 
-    def _classify_sub_img(self, slide, vertice):
+    def _classify_sub_img(self, slide, vertice, WIDTH, HEIGHT):
         """
         虚警分类消除，杆号检测子模型
         :param slide:
-        :param vertice:
+        :param vertice:  x1, y1, x2, y2, class_name, confidence
         :return:
         """
+        # 如果子图需要扩充，可能配置为0
+        # if self.model_cfg.padding_pixel:
+        vertice[0] = max(vertice[0] - self.model_cfg.padding_pixel[0], 0)
+        vertice[1] = max(vertice[1] - self.model_cfg.padding_pixel[1], 0)
+        vertice[2] = min(vertice[2] + self.model_cfg.padding_pixel[2], WIDTH)
+        vertice[3] = min(vertice[3] + self.model_cfg.padding_pixel[3], HEIGHT)
+
+
         x0, y0, x1, y1 = vertice[0:4]
         sub_slide = slide[y0: y1, x0:x1]
-        # 子模型处理
+
+        # 如果有指定类型检测的模型
+        if vertice[4] and vertice[4] in self.sub_model_dict.keys():
+            type_name, class_confidence = self.sub_model_dict[vertice[4]].detect(sub_slide)
+            return type_name, class_confidence
+
+        # 没有指定子模型，则尝试处理子模型处理
         for sub_model in self.sub_model_list:
             # class_confidence 约定大于100的场景下，表示杆号识别
             type_name, class_confidence = sub_model.detect(sub_slide)
@@ -230,6 +290,11 @@ class predict_pipe(object):
             pass
 
         results = []
+
+        # 如果自定义了过滤方法  例如杆号 保留最大方差的框，根据方差计算筛选杆号的框，待后续考虑
+        if callable(self.verify_after_main_model):
+            vertices = self.verify_after_main_model(slide, vertices)
+
         for vertice in vertices:
             # 类型判断
             if not isinstance(vertice, BBox):
@@ -241,20 +306,9 @@ class predict_pipe(object):
             if vertice[5] < self.model_cfg.thresh_ai:
                 continue
 
-            if self.between_main_sub_func and not self.between_main_sub_func(vertice):
-                logging.warning("bbox{}后处理不符合要求".format(vertice))
-                continue
-
             # x2, y2归一化
             vertice[2] = min(vertice[2], WIDTH)
             vertice[3] = min(vertice[3], HEIGHT)
-
-            # 几何参数判断
-            if self.model_cfg and (not vertice.judge_by_geo(**self.model_cfg.bbox_geo_feature)
-                                   or not vertice.judge_by_edge(WIDTH, HEIGHT, **self.model_cfg.bbox_geo_feature)):
-                # 不满足几何参数配置，返回
-                logging.warning("[{}]缺陷{}的几何参数不满足配置门限".format(self.model_cfg.model_type, vertice))
-                continue
 
             # x1, y1, x2, y2, class_name, confidence 转换成字典
             defect = {
@@ -266,26 +320,28 @@ class predict_pipe(object):
                 "confidence": vertice[5],
             }
 
+            # 不需要运行子模型，检测结果直接返回
+            if not self.sub_model_dict and not self.sub_model_list or \
+                            callable(self.need_sub_model_detect) and not self.need_sub_model_detect(vertice):
+                results.append(defect)
+                continue
+
             # 消除虚警，子类型检测
             try:
-                # 如果子图需要扩充
-                if self.model_cfg.padding_pixel:
-                    vertice[0] = max(vertice[0] - self.model_cfg.padding_pixel, 0)
-                    vertice[1] = max(vertice[1] - self.model_cfg.padding_pixel, 0)
-                    vertice[2] = min(vertice[2] + self.model_cfg.padding_pixel, WIDTH)
-                    vertice[3] = min(vertice[3] + self.model_cfg.padding_pixel, HEIGHT)
-
-                class_name, class_confidence = self._classify_sub_img(slide, vertice=vertice)
+                class_name, class_confidence = self._classify_sub_img(slide, vertice=vertice, WIDTH=WIDTH, HEIGHT=HEIGHT)
                 # class_confidence 约定大于99的场景下，表示杆号识别
                 if class_confidence and int(class_confidence) > 99:
                     defect['number'] = class_name
                 # 可能没有子模型
                 elif not class_name:
-                    pass
+                    # todo 暂时存储ai名称到number字段中
+                    defect['number'] = vertice[4]
                     # logging.error("图片{}的{}区域子模型预测结果为空".format(tif_path, vertice))
                 else:
                     # 更新子模型分类，添加分类模型置信度
                     defect['name'] = class_name
+                    # todo 暂时存储ai名称到number字段中
+                    defect['number'] = vertice[4]
                     defect['class_confidence'] = class_confidence
                     # vertice[4] = class_name
                     # vertice.append(class_confidence)
@@ -293,6 +349,11 @@ class predict_pipe(object):
                 logging.error("图片{}的{}区域子模型预测发生异常：{}".format(tif_path, vertice, e), exc_info=1)
 
             results.append(defect)
+
+        # 如果有后处理
+        if callable(self.post_handle_for_result):
+            results = self.post_handle_for_result(results)
+
         return results
 
     # todo delete方式暂时不支持

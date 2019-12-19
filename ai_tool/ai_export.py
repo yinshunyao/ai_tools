@@ -6,14 +6,18 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 import cv2
 import pymysql
+import json
 import xml.etree.ElementTree as ET
+
+import sys
 from lxml import etree
 from GTUtility.GTConfig.global_dict import GlobalDict
 import easyargs
 from threading import RLock
 
 # no_xml = ["01010302", "01010306", "01010601", "01010603", "01010501", "01010501"]  # 赛选出不需要的检测类型
-no_xml = ["01010302", "01010306", "01010601", "01010603"]  # 赛选出不需要的检测类型
+# no_xml = ["01010302", "01010306", "01010601", "01010603"]  # 赛选出不需要的检测类型
+no_xml = []  # 赛选出不需要的检测类型
 #  默认写文件方式
 DEFAULT_METHOD = 'w'
 # 默认的编码
@@ -26,11 +30,13 @@ frame_color = {1: (0, 255, 0),
 # 线条的粗细程度,越大则越粗
 LINE_SIZE = 3
 # 置信度(阈值)配置,小于此值的不导出
-thresh = 0.85
+thresh = 0.3
 # 并发数
 thread_nun = 40
 # 线程锁,导出xml时 创建任务的时候需要加锁
 _lock_mkdir = RLock()
+ganhao_code = ["0301", "0302"]
+dir_ext = "2019_12_16_管帽_U型环_等电位线"
 
 
 class ImgFile(object):
@@ -147,10 +153,10 @@ class XmlFile(object):
 
             # 特殊的属性标注
             if label in writer.attr_map.keys():
-                writer.set_attr_flag(bndbox[0], bndbox[1], bndbox[2], bndbox[3], label)
+                writer.set_attr_flag(bndbox[0], bndbox[1], bndbox[2], bndbox[3], bndbox[4], label)
             # 正常的标注框
             else:
-                writer.add_box(bndbox[0], bndbox[1], bndbox[2], bndbox[3], label, difficult)
+                writer.add_box(bndbox[0], bndbox[1], bndbox[2], bndbox[3], bndbox[4], label, difficult)
 
         writer.save(default_xml_name=xml_name)
         return
@@ -177,7 +183,7 @@ class XmlWriter(object):
         self.img_name = img_name
         print(img_name)
 
-    def set_attr_flag(self, xmin, ymin, xmax, ymax, label):
+    def set_attr_flag(self, xmin, ymin, xmax, ymax, number, label):
         """
         设置特殊的属性标签
         :param xmin:
@@ -188,7 +194,7 @@ class XmlWriter(object):
         :return:
         """
         attr = self.attr_map[label]
-        self.attr_flag[attr] = dict(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax)
+        self.attr_flag[attr] = dict(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax, number=number)
 
     def _prettify(self, elem):
         """
@@ -265,7 +271,7 @@ class XmlWriter(object):
         segmented.text = '0'
         return top
 
-    def add_box(self, xmin, ymin, xmax, ymax, name, difficult):
+    def add_box(self, xmin, ymin, xmax, ymax, number, name, difficult):
         """
         往self.boxlist里面添加1个或者多个的缺陷坐标框
         :param xmin: x1
@@ -297,6 +303,7 @@ class XmlWriter(object):
         label = self.bnd_map.get(name) or name
         bndbox['name'] = label
         bndbox['difficult'] = difficult
+        bndbox['number'] = number
         self.boxlist.append(bndbox)
 
     def add_object(self, top):
@@ -322,6 +329,8 @@ class XmlWriter(object):
                 truncated.text = "0"
             difficult = ET.SubElement(object_item, 'difficult')  # 创建一个为truncated的叶子节点
             difficult.text = str(bool(each_object['difficult']) & 1)
+            value = ET.SubElement(object_item, "value")  # 创建一个节点为value,存放的是杆号的值,为字符串形式
+            value.text = str(each_object['number'])
             bndbox = ET.SubElement(object_item, 'bndbox')  # 创建一个为truncated的叶子节点
             xmin = ET.SubElement(bndbox, 'xmin')  # 创建一个为xmin的叶子节点
             xmin.text = str(each_object['xmin'])
@@ -335,8 +344,9 @@ class XmlWriter(object):
     def get_xml_dir(self):
         # xml_dir = os.path.join(os.path.split(self.imgfolddir)[0], "xml")  # xml目录拼接
         global _lock_mkdir
-        name = exclude_name()
-        xml_dir = os.path.join(self.imgfolddir, "xml" + str(thresh) + name)  # xml目录拼接
+        # name = exclude_name()
+        # xml_dir = os.path.join(self.imgfolddir, "xml" + str(thresh) + name)  # xml目录拼接
+        xml_dir = os.path.join(self.imgfolddir, "xml" + str(thresh) + dir_ext)  # xml目录拼接
         # 创建文件夹加锁
         with _lock_mkdir:
             if not os.path.exists(xml_dir):  # 判断目录是否存在,如果不存在则创建一个
@@ -399,7 +409,7 @@ def get_cursor():
     获取一个数据库的连接对象
     :return:
     """
-    db = pymysql.connect(host='192.168.1.74', user='root', passwd='123456', db='brainweb', port=3306, charset='utf8')
+    db = pymysql.connect(host='192.168.1.73', user='root', passwd='123456', db='brainweb', port=3306, charset='utf8')
     cursor = db.cursor()
     return cursor
 
@@ -419,7 +429,7 @@ def get_data(img):
         for a in defect_list:
             code = a[0]
             defect = a[1]
-            defect = eval(defect)
+            defect = json.loads(defect)
             confidence = float(defect.get("confidence", 1))
             if confidence < thresh:
                 logging.warning("当前阈值小于:{}-->直接过滤".format(thresh))
@@ -428,10 +438,17 @@ def get_data(img):
                 # 赛选出不需要导出的缺陷
                 logging.warning("{}不展示".format(GlobalDict.get_name(code)))
                 continue
-            points = (defect.get("x1"), defect.get("y1"), defect.get("x2"), defect.get("y2"))
-            label = GlobalDict._get_attr_by_code(code, "name_ai")
-            if not label or label == "":
-                label = ""
+            # if code in ganhao_code:
+            #     points = (defect.get("x1"), defect.get("y1"), defect.get("x2"), defect.get("y2"), defect.get("number"))
+            # else:
+            points = (defect.get("x1"), defect.get("y1"), defect.get("x2"), defect.get("y2"), defect.get("number", "0"))
+
+            if str(code) == "0301":
+                label = "ganhao"
+            else:
+                label = defect.get("number")
+            if not label:
+                sys.exit("label为空:{}".format(code))
             point = {"points": points, "label": label, "difficult": "0", "is_ai": 1}
             shapes.append(point)
         if len(shapes) == 0:
@@ -444,24 +461,24 @@ def get_data(img):
 
 
 @easyargs
-def export_xml(task_id, detect_flag=2):
+def export_xml(task_id, path_like="", detect_flag=3):
     """
     导出xml入口函数
     :param task_id:任务id
-    :param thread_nun: 线程数 建议50
-    :param thresh: 置信度
+    :param path_like: 路径条件 "海林北_尚志南\K275528_409"
+    :param detect_flag: 线程数 建议50
     :return:
     """
     cursor = get_cursor()
     # 先判断任务是否全部完成
-    sql_count = 'SELECT count(*) FROM brainweb.PictureDetection where DDID={} and detect_flag!={};'.format(task_id, detect_flag)
-    logging.warning("任务{}预期每张图片检测模型数：{}".format(task_id, detect_flag))
-    cursor.execute(sql_count)
-    count = cursor.fetchall()[0][0]
-    if count > 0:
-        logging.error("任务{}还没有检测结束，预期每张图片检测{}个模型，实际有图片detect_flag统计错误".format(task_id, detect_flag))
-        logging.warning("执行SQL语句校验结果\n{}".format(sql_count))
-        return
+    # sql_count = 'SELECT count(*) FROM brainweb.PictureDetection where DDID={} and detect_flag!={};'.format(task_id, detect_flag)
+    # logging.warning("任务{}预期每张图片检测模型数：{}".format(task_id, detect_flag))
+    # cursor.execute(sql_count)
+    # count = cursor.fetchall()[0][0]
+    # if count > 0:
+    #     logging.error("任务{}还没有检测结束，预期每张图片检测{}个模型，实际有图片detect_flag统计错误".format(task_id, detect_flag))
+    #     logging.warning("执行SQL语句校验结果\n{}".format(sql_count))
+    #     return
 
     sql_count = 'SELECT count(*) FROM brainweb.PictureDetection where DDID={} and detect_flag={};'.format(task_id,
                                                                                                           detect_flag)
@@ -472,7 +489,12 @@ def export_xml(task_id, detect_flag=2):
         logging.warning("执行SQL语句校验结果\n{}".format(sql_count))
         return
 
-    cursor.execute('SELECT DDID,id,FramePath,defect_flag FROM brainweb.PictureDetection WHERE DDID= {}'.format(task_id))
+    # 图片过滤
+    if not path_like:
+        cursor.execute('SELECT DDID,id,FramePath,defect_flag FROM brainweb.PictureDetection WHERE DDID= {}'.format(task_id))
+    else:
+        cursor.execute(
+            'SELECT DDID,id,FramePath,defect_flag FROM brainweb.PictureDetection WHERE DDID= {} and FramePath like "%{}%"'.format(task_id, path_like))
     data = cursor.fetchall()
     pool = []
     with ThreadPoolExecutor(max_workers=thread_nun) as executor:
@@ -487,8 +509,9 @@ def export_xml(task_id, detect_flag=2):
 if __name__ == '__main__':
     t1 = time.time()
     # python3 /home/web/GTUtility/GTTools/ai_export.py   task_id
+    # python3 /home/web/GTUtility/GTTools/ai_export.py   task_id  --path_like "海林北_尚志南/K275528_409"
     export_xml()
-    logging.warning("开了{}个线程导出xml,此次导出{}共花费了:{}分{}秒".format(thread_nun, exclude_name(), *divmod(time.time() - t1, 60)))
+    logging.warning("开了{}个线程导出xml,此次导出{}共花费了:{}分{}秒".format(thread_nun, "杆号", *divmod(time.time() - t1, 60)))
 
 # shapes = [
 #     {"points": ("302", "65", "571", "286"), "label": "capmissing", "difficult": "0", "is_ai": 1},

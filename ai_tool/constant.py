@@ -31,3 +31,5 @@ UNET_SAVE_PATH = "save_path"
 
 # bbox配置section名称
 SECTION_BBOX="bbox"
+
+SECTION_CENTERNET = "centernet"
