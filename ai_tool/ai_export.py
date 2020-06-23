@@ -1,42 +1,57 @@
 # -*-coding:utf-8-*-
 import logging
+
+FORMAT = '[%(asctime)s][PID:%(process)d] %(levelname)s: %(message)s (%(filename)s@line:%(lineno)d)'
+LEVEL = logging.WARNING
+logging.basicConfig(level=LEVEL, format=FORMAT)
 import os
 import codecs
 from concurrent.futures import ThreadPoolExecutor
 import time
 import cv2
-import pymysql
 import json
-import xml.etree.ElementTree as ET
-
 import sys
+import numpy as np
+from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 from lxml import etree
-from GTUtility.GTConfig.global_dict import GlobalDict
-import easyargs
+from configparser import ConfigParser
 from threading import RLock
+from GTUtility.FdiskData import resolvemv_ope
+from GTUtility.GTConfig.global_dict import GlobalDict
+from GTUtility.GTConfig.config_connections import mysql_exc
 
-# no_xml = ["01010302", "01010306", "01010601", "01010603", "01010501", "01010501"]  # 赛选出不需要的检测类型
-# no_xml = ["01010302", "01010306", "01010601", "01010603"]  # 赛选出不需要的检测类型
-no_xml = []  # 赛选出不需要的检测类型
+# 线程锁,导出xml时 创建文件夹的时候需要加锁
+_lock_mkdir = RLock()
+CONFIG_FILE_NAME = "export.ini"
+config_file = os.path.join(os.path.split(os.path.abspath(__file__))[0], CONFIG_FILE_NAME)
+config = ConfigParser()
+config.read(config_file, encoding="utf-8")
+task_id = int(config.get("SET", "task_id", fallback=0))
+img_dir = config.get("SET", "img_dir")
+xml_dir = config.get("SET", "xml_dir")
+path_like = config.get("SET", "path_like", fallback=0)
+detect_flag = config.get("SET", "detect_flag", fallback=1)
+thread_nun = int(config.get("SET", "thread_nun", fallback=8))
+interval = int(config.get("SET", "interval", fallback=0))
+export_code = config.get("SET", "code", fallback="")
+export_code_list = export_code.split(",")
+attr = int(config.get("SET", "attr", fallback=0))
+thresh = float(config.get("SET", "thresh", fallback=0))
 #  默认写文件方式
 DEFAULT_METHOD = 'w'
 # 默认的编码
 DEFAULT_ENCODING = 'utf-8'
 # xml后缀
 XML_EXT = '.xml'
+# img后缀
+IMG_EXT = '.jpg'
 # 颜色配置
 frame_color = {1: (0, 255, 0),
                0: (0, 0, 255)}
 # 线条的粗细程度,越大则越粗
 LINE_SIZE = 3
-# 置信度(阈值)配置,小于此值的不导出
-thresh = 0.3
-# 并发数
-thread_nun = 40
-# 线程锁,导出xml时 创建任务的时候需要加锁
-_lock_mkdir = RLock()
-ganhao_code = ["0301", "0302"]
-dir_ext = "2019_12_16_管帽_U型环_等电位线"
+dir_ext = "20200403_ganhao"
 
 
 class ImgFile(object):
@@ -67,7 +82,8 @@ class ImgFile(object):
         """
         image = cv2.imread(self.img_name)
         for one in self.shapes:
-            cv2.rectangle(image, (int(one["points"][0]), int(one["points"][1])), (int(one["points"][2]), int(one["points"][3])), frame_color[one["is_ai"]], size)
+            cv2.rectangle(image, (int(one["points"][0]), int(one["points"][1])),
+                          (int(one["points"][2]), int(one["points"][3])), frame_color[one["is_ai"]], size)
         cv2.imshow(os.path.split(self.img_name)[1], image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
@@ -81,7 +97,8 @@ class ImgFile(object):
         image = cv2.imread(self.img_name)  # 读取图片获得一个图片对象
         for one in self.shapes:
             #  分别将缺陷坐标等信息加进去
-            cv2.rectangle(image, (int(one["points"][0]), int(one["points"][1])), (int(one["points"][2]), int(one["points"][3])), frame_color[one["is_ai"]], size)
+            cv2.rectangle(image, (int(one["points"][0]), int(one["points"][1])),
+                          (int(one["points"][2]), int(one["points"][3])), frame_color[one["is_ai"]], size)
             # 判断有没有传新的图片文件名
         if self.new_img_name is None:
             # 没有传则单独构造一个
@@ -118,6 +135,19 @@ class XmlFile(object):
         self.attr_flag = attr_flag
         self.bnd_flag = bnd_flag
 
+    def _get_h_w_d(self, img_name):
+        """
+        根据图片获取对应的高度宽度深度
+        :param img_name: 图片绝对路径
+        :return: (高度,宽度,深度)
+        """
+        sp = cv2.imread(img_name).shape
+        imageShape = []
+        for i in sp:
+            imageShape.append(str(i))
+
+        return tuple(imageShape)
+
     def save_xml(self, shapes, img_name=None, xml_name=None):
         """
         根据xml名和图片名已经对应的标注框保存到对应的xml
@@ -131,7 +161,7 @@ class XmlFile(object):
 
         if not os.path.isfile(img_name):
             raise Exception("img_name:{}不是文件".format(img_name))
-        imageShape = get_h_w_d(img_name)
+        imageShape = self._get_h_w_d(img_name)
         imgFolderPath = os.path.dirname(img_name)  # 返回图片的目录
         imgFolderName = os.path.split(imgFolderPath)[-1]  # 返回 图片的目录的最底层
         imgFileName = os.path.basename(img_name)  # 返回图片名字
@@ -156,15 +186,17 @@ class XmlFile(object):
                 writer.set_attr_flag(bndbox[0], bndbox[1], bndbox[2], bndbox[3], bndbox[4], label)
             # 正常的标注框
             else:
-                writer.add_box(bndbox[0], bndbox[1], bndbox[2], bndbox[3], bndbox[4], label, difficult)
-
+                writer.add_box(bndbox[0], bndbox[1], bndbox[2], bndbox[3], bndbox[4], bndbox[5], bndbox[6], bndbox[7],
+                               label, difficult)
+                # x1,y1,x2,y2,number,class_name,confidence,class_confidence,label, difficult
         writer.save(default_xml_name=xml_name)
         return
 
 
 class XmlWriter(object):
 
-    def __init__(self, imgfolddir, foldername, filename, imgSize, databaseSrc='Unknown', localImgPath=None, bnd_flag=None, attr_flag=None, img_name=None):
+    def __init__(self, imgfolddir, foldername, filename, imgSize, databaseSrc='Unknown', localImgPath=None,
+                 bnd_flag=None, attr_flag=None, img_name=None):
         self.imgfolddir = imgfolddir
         self.foldername = foldername
         self.filename = filename
@@ -181,7 +213,6 @@ class XmlWriter(object):
         for k, attr in self.attr_map.items():
             self.attr_flag[attr] = ""
         self.img_name = img_name
-        print(img_name)
 
     def set_attr_flag(self, xmin, ymin, xmax, ymax, number, label):
         """
@@ -260,18 +291,11 @@ class XmlWriter(object):
         height.text = str(self.imgSize[0])
         depth = ET.SubElement(size_part, 'depth')  # 创建一个为depth的叶子节点
         depth.text = str(self.imgSize[2])
-        # width.text = str(self.imgSize[1])
-        # height.text = str(self.imgSize[0])
-        # if len(self.imgSize) == 3:
-        #     depth.text = str(self.imgSize[2])
-        # else:
-        #     depth.text = '1'
-
         segmented = ET.SubElement(top, 'segmented')  # 创建一个为segmented的叶子节点
         segmented.text = '0'
         return top
 
-    def add_box(self, xmin, ymin, xmax, ymax, number, name, difficult):
+    def add_box(self, xmin, ymin, xmax, ymax, number, class_name, confidence, class_confidence, name, difficult):
         """
         往self.boxlist里面添加1个或者多个的缺陷坐标框
         :param xmin: x1
@@ -282,26 +306,16 @@ class XmlWriter(object):
         :param difficult:"0"或者"1"
         :return:
         """
-        # logging.warning("xmin之前:{}".format(xmin))
         xmin = str(min(float(xmin), float(self.imgSize[1])))
-        # logging.warning("width:{}, xmin之后:{}".format(self.imgSize[0], xmin))
-
-        # logging.warning("ymin之前:{}".format(ymin))
         ymin = str(min(float(ymin), float(self.imgSize[0])))
-        # logging.warning("hight:{}, ymin之后:{}".format(self.imgSize[1], ymin))
-
-        # logging.warning("xmax之前:{}".format(xmax))
         xmax = str(min(float(xmax), float(self.imgSize[1])))
-        # logging.warning("width:{}, xmax之后:{}".format(self.imgSize[0], xmax))
-
-        # logging.warning("ymax之前:{}".format(ymax))
         ymax = str(min(float(ymax), float(self.imgSize[0])))
-        # logging.warning("hight:{}, ymax之后:{}".format(self.imgSize[1], ymax))
-        # time.sleep(1)
-
         bndbox = {'xmin': xmin, 'ymin': ymin, 'xmax': xmax, 'ymax': ymax}
         label = self.bnd_map.get(name) or name
         bndbox['name'] = label
+        bndbox['class_name'] = class_name
+        bndbox['confidence'] = confidence
+        bndbox['class_confidence'] = class_confidence
         bndbox['difficult'] = difficult
         bndbox['number'] = number
         self.boxlist.append(bndbox)
@@ -316,14 +330,13 @@ class XmlWriter(object):
             object_item = ET.SubElement(top, 'object')  # 创建一个为object的叶子节点
             name = ET.SubElement(object_item, 'name')  # 创建一个为name的叶子节点
             name.text = each_object['name']
-            # name_src = ET.SubElement(object_item, 'name_src')
-            # name_src.text = each_object['name']
             pose = ET.SubElement(object_item, 'pose')  # 创建一个为pose的叶子节点
             pose.text = "Unspecified"
             truncated = ET.SubElement(object_item, 'truncated')  # 创建一个为truncated的叶子节点
             if int(float(each_object['ymax'])) == int(float(self.imgSize[0])) or (int(float(each_object['ymin'])) == 1):
                 truncated.text = "1"  # max == height or min
-            elif (int(float(each_object['xmax'])) == int(float(self.imgSize[1]))) or (int(float(each_object['xmin'])) == 1):
+            elif (int(float(each_object['xmax'])) == int(float(self.imgSize[1]))) or (
+                    int(float(each_object['xmin'])) == 1):
                 truncated.text = "1"  # max == width or min
             else:
                 truncated.text = "0"
@@ -340,13 +353,19 @@ class XmlWriter(object):
             xmax.text = str(each_object['xmax'])
             ymax = ET.SubElement(bndbox, 'ymax')  # 创建一个为ymax的叶子节点
             ymax.text = str(each_object['ymax'])
+            class_name = ET.SubElement(bndbox, 'class_name')
+            class_name.text = str(each_object['class_name'])
+            confidence = ET.SubElement(bndbox, 'confidence')
+            confidence.text = str(each_object['confidence'])
+            class_confidence = ET.SubElement(bndbox, 'class_confidence')
+            class_confidence.text = str(each_object['class_confidence'])
 
     def get_xml_dir(self):
         # xml_dir = os.path.join(os.path.split(self.imgfolddir)[0], "xml")  # xml目录拼接
         global _lock_mkdir
         # name = exclude_name()
         # xml_dir = os.path.join(self.imgfolddir, "xml" + str(thresh) + name)  # xml目录拼接
-        xml_dir = os.path.join(self.imgfolddir, "xml" + str(thresh) + dir_ext)  # xml目录拼接
+        xml_dir = os.path.join(self.imgfolddir, "xml_" + str(thresh) + dir_ext)  # xml目录拼接
         # 创建文件夹加锁
         with _lock_mkdir:
             if not os.path.exists(xml_dir):  # 判断目录是否存在,如果不存在则创建一个
@@ -380,146 +399,265 @@ class XmlWriter(object):
         out_file.close()  # 关闭连接
 
 
-def exclude_name():
-    l1 = []
-    for code in no_xml:
-        l1.append(GlobalDict.get_name(code))
-    if len(l1) == 0:
-        return ""
-    else:
-        return "不包含_" + "_".join(l1)
-
-
-def get_h_w_d(img_name):
+def get_data(pic_id: int, name: str, img_type: int, path_list: list = []):
     """
-    根据图片获取对应的高度宽度深度
-    :param img_name: 图片绝对路径
-    :return: (高度,宽度,深度)
-    """
-    sp = cv2.imread(img_name).shape
-    imageShape = []
-    for i in sp:
-        imageShape.append(str(i))
 
-    return tuple(imageShape)
-
-
-def get_cursor():
-    """
-    获取一个数据库的连接对象
+    :param pic_id: 图片id
+    :param name: 图片保存在磁盘的绝对路径或者是mv的路径以及对应的offset以及size
+    :param img_type: 0:本地图片,1:本地mv,2:hdfs下图片,3:hdfs下mv
+    :param path_list: 主要是判断是否需要去重
     :return:
     """
-    db = pymysql.connect(host='192.168.1.73', user='root', passwd='123456', db='brainweb', port=3306, charset='utf8')
-    cursor = db.cursor()
-    return cursor
-
-
-def get_data(img):
-    """
-    单张图片判断是否导出xml
-    :param img:
-    :return:
-    """
-    if int(img[3]) == 1:
-        shapes = []
-        xml_file = XmlFile()
-        cursor = get_cursor()
-        cursor.execute('SELECT defect_code,defect_info_original FROM brainweb.PictureDefect WHERE task_id={} and pic_id={}'.format(img[0], img[1]))
-        defect_list = cursor.fetchall()
-        for a in defect_list:
-            code = a[0]
-            defect = a[1]
-            defect = json.loads(defect)
-            confidence = float(defect.get("confidence", 1))
-            if confidence < thresh:
-                logging.warning("当前阈值小于:{}-->直接过滤".format(thresh))
-                continue
-            if str(code) in no_xml:
-                # 赛选出不需要导出的缺陷
-                logging.warning("{}不展示".format(GlobalDict.get_name(code)))
-                continue
-            # if code in ganhao_code:
-            #     points = (defect.get("x1"), defect.get("y1"), defect.get("x2"), defect.get("y2"), defect.get("number"))
-            # else:
-            points = (defect.get("x1"), defect.get("y1"), defect.get("x2"), defect.get("y2"), defect.get("number", "0"))
-
-            if str(code) == "0301":
-                label = "ganhao"
-            else:
-                label = defect.get("number")
-            if not label:
-                sys.exit("label为空:{}".format(code))
-            point = {"points": points, "label": label, "difficult": "0", "is_ai": 1}
-            shapes.append(point)
-        if len(shapes) == 0:
-            # 没有缺陷不导出xml
-            return
-        xml_file.save_xml(shapes=shapes, img_name=img[2])
-    else:
+    # 判断是否是已经导出的图片
+    if not path_list:
         pass
+    else:
+        if name in path_list:
+            print("*********************************{}之前已经导出过,不再导出".format(name))
+            return
+        else:
+            pass
+    # 定义一个空的列表来存框框信息,如果最后为空,则不导出xml
+    shapes = []
+    xml_file = XmlFile()
+    # 根据图片id从缺陷表中查询缺陷信息,这里测试过,只用pic_id比使用task_id加pic_id速度更快
+    sql = """SELECT defect_code,defect_info_original FROM PictureDefect WHERE pic_id={}""".format(pic_id)
+    defect_list = mysql_exc.excute(sql)
+    for a in defect_list:
+        code = a[0]
+        defect = a[1]
+        defect = json.loads(defect)
+        if not check_special(code, defect):
+            continue
+        label = defect.get("class_name")
+        if not label:
+            sys.exit("label为空:{}".format(code))
+        points = (defect.get("x1"), defect.get("y1"), defect.get("x2"), defect.get("y2"), defect.get("number", "0"),
+                  defect.get("class_name"), defect.get("confidence", "0"), defect.get("class_confidence", "1"))
+        point = {"points": points, "label": label, "difficult": "0", "is_ai": 1}
+        shapes.append(point)
+    if len(shapes) == 0:
+        # 没有缺陷不导出xml
+        return
+    if img_type == 0:
+        #  本地图片,老样子导出就行
+        name_path, img_name = os.path.split(name)
+        end_img_name = os.path.join(img_dir, img_name)
+        if not os.path.exists(end_img_name):
+            img2img(name, end_img_name)
+        xml_name = os.path.join(xml_dir, os.path.splitext(img_name)[0] + XML_EXT)
+        xml_file.save_xml(shapes=shapes, img_name=name, xml_name=xml_name)
+    elif img_type == 1:
+        # 本地mv
+        path_dict = parse_(name)
+        if not path_dict:
+            return
+        offset = path_dict.get("offset")
+        size = path_dict.get("size")
+        mv = path_dict.get("path")
+        end_name = os.path.splitext(os.path.split(path_dict.get("path"))[1])[0]
+        pic_name = os.path.join(img_dir, end_name + offset + size + IMG_EXT)
+        if not os.path.exists(pic_name):
+            zero_save_img(mv, pic_name, offset, size)
+        xml_name = os.path.join(xml_dir, end_name + offset + size + XML_EXT)
+        xml_file.save_xml(shapes=shapes, img_name=pic_name, xml_name=xml_name)
+    elif img_type == 3:
+        # HDFS 下MV
+        path_dict = parse_(name)
+        if not path_dict:
+            return
+        offset = path_dict.get("offset")
+        size = path_dict.get("size")
+        mv = path_dict.get("path")
+        end_name = os.path.splitext(os.path.split(path_dict.get("path"))[1])[0]
+        pic_name = os.path.join(img_dir, end_name + offset + size + IMG_EXT)
+        if not os.path.exists(pic_name):
+            save_img_from_hdfs(mv, pic_name, offset, size)
+        xml_name = os.path.join(xml_dir, end_name + offset + size + XML_EXT)
+        xml_file.save_xml(shapes=shapes, img_name=pic_name, xml_name=xml_name)
+    else:
+        return
     return
 
 
-@easyargs
-def export_xml(task_id, path_like="", detect_flag=3):
+def parse_(path: str):
+    tmp_dict = {}
+    try:
+        mv_name = path.split("?")[0]
+        other_parse = path.split("?")[1]
+        query_list = other_parse.split("&")
+        for query in query_list:
+            k_v = query.split("=")
+            k, v = k_v[0], k_v[1]
+            tmp_dict[k] = v
+        tmp_dict["path"] = mv_name
+    except Exception as e:
+        logging.error("parse_ error :{}".format(e), exc_info=True)
+    finally:
+        return tmp_dict
+
+
+def save_img_from_hdfs(mv, pic_name: str, offset: (int, str), size: (int, str)):
+    res = resolvemv_ope(mv, None, is_hdfs=True)
+    # 通过读取二进制
+    byte_image = res.get_pic_from_mv(offset, size)
+    # 需要进行转化再写入
+    cv2.imwrite(pic_name, cv2.imdecode(np.asanyarray(bytearray(byte_image), dtype="uint8"), cv2.IMREAD_COLOR))
+    return
+
+
+def img2img(name: str, end_img_name: str):
+    count = os.path.getsize(name)
+    with open(name, "rb") as f_src:
+        with open(end_img_name, 'wb') as f_dst:
+            os.sendfile(f_dst.fileno(), f_src.fileno(), offset=None, count=count)
+    logging.warning("图片{}--->{}".format(name, end_img_name))
+    return
+
+
+def zero_save_img(mv: str, pic_name: str, offset: (int, str), size: (int, str)):
     """
-    导出xml入口函数
-    :param task_id:任务id
-    :param path_like: 路径条件 "海林北_尚志南\K275528_409"
-    :param detect_flag: 线程数 建议50
+    使用0拷贝的方式保存图
+    :param mv: mv的绝对路径
+    :param pic_name: 图片的绝对路径
+    :param offset: 偏移量
+    :param size: 大小
     :return:
     """
-    cursor = get_cursor()
-    # 先判断任务是否全部完成
-    # sql_count = 'SELECT count(*) FROM brainweb.PictureDetection where DDID={} and detect_flag!={};'.format(task_id, detect_flag)
-    # logging.warning("任务{}预期每张图片检测模型数：{}".format(task_id, detect_flag))
-    # cursor.execute(sql_count)
-    # count = cursor.fetchall()[0][0]
-    # if count > 0:
-    #     logging.error("任务{}还没有检测结束，预期每张图片检测{}个模型，实际有图片detect_flag统计错误".format(task_id, detect_flag))
-    #     logging.warning("执行SQL语句校验结果\n{}".format(sql_count))
-    #     return
+    res = resolvemv_ope(mv, None, is_hdfs=False)
+    with res.open_mv() as f_mv:
+        with open(pic_name, "wb") as f_pic:
+            os.sendfile(f_pic.fileno(), f_mv.fileno(), offset=int(offset), count=int(size))
+    logging.warning("mv :{} save :{}".format(mv, pic_name))
+    return
 
-    sql_count = 'SELECT count(*) FROM brainweb.PictureDetection where DDID={} and detect_flag={};'.format(task_id,
-                                                                                                          detect_flag)
-    cursor.execute(sql_count)
-    count = cursor.fetchall()[0][0]
-    if count == 0:
-        logging.error("任务{}还没有开始检测，预期每张图片检测{}个模型，实际检测图片数为0".format(task_id, detect_flag))
-        logging.warning("执行SQL语句校验结果\n{}".format(sql_count))
-        return
 
-    # 图片过滤
+def parse_path(path: str):
+    """
+    解析路径
+    :param path:
+    :return:一个字典,带详细信息,可根据信息导出对应的图片
+    """
+    tmp_dict = {}
+    try:
+        end_parse = urlparse(path)
+        end_path = end_parse.path
+        query_list = end_parse.query.split("&")
+        for query in query_list:
+            k_v = query.split("=")
+            k, v = k_v[0], k_v[1]
+            tmp_dict[k] = v
+        tmp_dict["path"] = end_path
+    except Exception as e:
+        logging.error("parse_path error :{}".format(e), exc_info=True)
+    finally:
+        return tmp_dict
+
+
+def main(is_export: int = 0):
+    """
+    导出xml以及图片的主函数
+    :return: 无,以文件的形式保存到磁盘中,到配置的目录中查看
+    """
+
+    where = ""
     if not path_like:
-        cursor.execute('SELECT DDID,id,FramePath,defect_flag FROM brainweb.PictureDetection WHERE DDID= {}'.format(task_id))
+        pass
     else:
-        cursor.execute(
-            'SELECT DDID,id,FramePath,defect_flag FROM brainweb.PictureDetection WHERE DDID= {} and FramePath like "%{}%"'.format(task_id, path_like))
-    data = cursor.fetchall()
+        where += "and PictureDetection.FramePath like '%{}%'".format(path_like)
+    if attr > 0:
+        where += "and PictureDetection.img_attr1 ={}".format(attr)
+    sql = """SELECT distinct(PictureDetection.id),PictureDetection.FramePath,PictureDetection.img_type FROM PictureDetection inner join  PictureDefect on PictureDetection.id=PictureDefect.pic_id where PictureDetection.DDID={task_id}  and PictureDetection.defect_flag>0 and PictureDefect.defect_code in ({defect_code_tuple}) {where};""".format(
+        task_id=task_id, defect_code_tuple=export_code, where=where)
+    print("本次导出的sql语句为:{}".format(sql))
+    data = mysql_exc.excute(sql)
+    data, count_data = interval_selection(data=data, interval=interval)
+    logging.warning("此次有{}张图片的数据".format(count_data))
+    if not is_export or not count_data:
+        pass
+    else:
+        # 判断目标目录,如果不存在则创建
+        if not os.path.exists(img_dir):
+            logging.warning("{}不存在,创建".format(img_dir))
+            os.makedirs(img_dir)
+        if not os.path.exists(xml_dir):
+            logging.warning("{}不存在,创建".format(xml_dir))
+            os.makedirs(xml_dir)
+        t1 = time.time()
+        export(data)
+        cost = time.time() - t1
+        minute, second = divmod(cost, 60)
+        logging.warning("导出xml{}个,此次导出共花费了:{}分{}秒,平均每秒{}个导出".format(count_data, minute, second, count_data / cost))
+    return
+
+
+def export(data: list):
     pool = []
     with ThreadPoolExecutor(max_workers=thread_nun) as executor:
         for i in data:
-            t = executor.submit(get_data, img=i)
+            t = executor.submit(get_data, pic_id=i[0], name=i[1], img_type=i[2], path_list=[])
             pool.append(t)
         for p in pool:
             p.result()
     return
 
 
-if __name__ == '__main__':
-    t1 = time.time()
-    # python3 /home/web/GTUtility/GTTools/ai_export.py   task_id
-    # python3 /home/web/GTUtility/GTTools/ai_export.py   task_id  --path_like "海林北_尚志南/K275528_409"
-    export_xml()
-    logging.warning("开了{}个线程导出xml,此次导出{}共花费了:{}分{}秒".format(thread_nun, "杆号", *divmod(time.time() - t1, 60)))
+def check_special(code: str, defect: dict):
+    """
+    检查特殊的
+    :param code: 缺陷代码
+    :param defect:缺陷信息
+    :return: 如果为False,则不导出次缺陷框框信息
+    """
+    if str(code) in ("01010601", "0307"):
+        # 等电位线比较特殊,要单独进行判断
+        h = float(defect.get("y2")) - float(defect.get("y1"))
+        w = float(defect.get("x2")) - float(defect.get("x1"))
+        if not h or not w or not (1.85 > (h / w) > 0.4) or not (1200 > h > 45) or not (1200 > w > 45):
+            logging.warning("等电位线滤除:{}".format(defect))
+            return False
+    # 使用阈值过滤
+    confidence = float(defect.get("confidence", 1))
+    if confidence < thresh:
+        logging.warning("当前阈值小于:{}-->直接过滤".format(thresh))
+        return False
+    if str(code) not in export_code_list:
+        # 只要配置的缺陷类型
+        logging.warning("{}不展示".format(GlobalDict.get_name(code)))
+        return False
+    return True
 
-# shapes = [
-#     {"points": ("302", "65", "571", "286"), "label": "capmissing", "difficult": "0", "is_ai": 1},
-#     {"points": ("604", "130", "1142", "572"), "label": "capmissing", "difficult": "0", "is_ai": 1},
-#     {"points": ("906", "195", "1713", "858"), "label": "capmissing", "difficult": "0", "is_ai": 1},
-# ]
-# xml_file = XmlFile()
-# xml_file.save_xml(shapes=shapes, img_name=r"Z:\ins\zh_test\JPEGImages\000001.jpg")
-# print(os.path.isfile(r"Z:\ins\zh_test\JPEGImages\0000011.jpg"))
-# img_file = ImgFile(img_name=r"Z:\ins\zh_test\JPEGImages\000001.jpg", shapes=shapes)
-# img_file.show_img()
+
+def interval_selection(data: list, interval: int = 0):
+    """
+    隔几抽一
+    :param data:数据库按照条件抽取出来的数据
+    :param interval: 隔多少个抽取一个
+    :return:result_list:需要导出的数据列表,count_data:数据总量
+    """
+    if interval == 0:
+        count_data = len(data)
+        return data, count_data
+    else:
+        result_list = []
+        num = 0
+        for i in data:
+            if num % interval == 0:
+                result_list.append(i)
+            num += 1
+        count_data = len(result_list)
+        return result_list, count_data
+
+
+if __name__ == '__main__':
+    input_list = (0, 1)
+    while 1:
+        try:
+            input_data = int(input("计数输入0,导出输入1--------->"))
+            if input_data not in input_list:
+                logging.warning("输入错误:{}---type{}".format(input_data, type(input_data)))
+                continue
+            main(input_data)
+            break
+        except Exception as e:
+            logging.error("错误请重试,error:{}".format(e), exc_info=True)

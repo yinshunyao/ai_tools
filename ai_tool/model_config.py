@@ -11,6 +11,19 @@ import os
 from GTUtility.GTTools.constant import *
 
 
+class ModelInfo:
+    """模型相关信息"""
+
+    def __init__(self, path, name, version="", md5="", *args, **kwargs):
+        self.path = path
+        self.name = name
+        self.version = version
+        self.md5 = md5
+
+    def dict(self):
+        return {"version": self.version, "md5": self.md5, "name": self.name}
+
+
 class ModelConfigLoad(object):
     def __init__(self, model_path):
         self.model_path = model_path
@@ -21,19 +34,32 @@ class ModelConfigLoad(object):
         self.ini_config.read(self.ini_cfg_path, encoding="utf-8")
         # 模型类型 unet或者其他
         self.model_type = self.ini_config.get(MODEL_CFG, "Type")
-        # 传递给模型的是否是图片，或者文件路径
-        self.image_only = self.ini_config.get(MODEL_CFG, "OnlyImage", fallback="false").strip() == "true"
+        # 传递给模型的是否是图片，或者文件路径，默认传递给模型图片
+        self.image_only = self.ini_config.get(MODEL_CFG, "OnlyImage", fallback="true").strip() == "true"
         # model文件
-        self.model_file = os.path.join(self.model_path, self.ini_config.get(MODEL_CFG, MODEL_FILE, fallback=""))  # /data2/model/uring/mask_rcnn_4c_defect_0275.h5
+        self.model_file = os.path.join(self.model_path, self.ini_config.get(MODEL_CFG, MODEL_FILE,
+                                                                            fallback=""))  # /data2/model/uring/mask_rcnn_4c_defect_0275.h5
         # names 配置初始化
         self.names = {}
-        self._load_names()
+        if not self.ini_config.get(MODEL_CFG, MODEL_NAME, fallback=""):
+            pass
+        else:
+            self._load_names()
+
+        # 模型相关信息
+        self.model_info = ModelInfo(
+            self.model_file,
+            self.ini_config.get(MODEL_CFG, MODEL_FILE, fallback=""),
+            version=self.ini_config.get(MODEL_CFG, "version", fallback=""),
+            md5=self.ini_config.get(MODEL_CFG, "md5", fallback=""),
+        )
+        logging.warning("模型信息如下：{}".format(self.model_info))
         # # 并发数 与 thread_max重复
         # self.concurrency = int(self.ini_config.get(MODEL_CFG, MODEL_CONCURRENCY, fallback=1))
         # 切片的长宽，默认值为0,表示不切片
         self.patch_width = int(self.ini_config.get(MODEL_CFG, "width", fallback=0))
         self.patch_height = int(self.ini_config.get(MODEL_CFG, "height", fallback=0))
-        self.padding = (self.ini_config.get(MODEL_CFG, "padding", fallback="true")).lower() == "true"
+        self.padding = (self.ini_config.get(MODEL_CFG, "padding", fallback="false")).lower() == "true"
         logging.warning("切片配置：宽-{}，高-{}，padding-{}".format(self.patch_width, self.patch_height, self.padding))
         # 调试模式
         self.debug = bool((self.ini_config.get(MODEL_CFG, "debug", fallback="false")).lower() == "true")
@@ -42,7 +68,8 @@ class ModelConfigLoad(object):
 
         # 黑名单，主要针对4C，部分图片在特定的模型不需要检测
         # 例如015946004_K292703_24_5_01.jpg 表示杆号，不需要检测管帽缺陷
-        self.black_list = [item.strip() for item in self.ini_config.get(MODEL_CFG, "black_list", fallback="").split(",") if not not item.strip()]
+        self.black_list = [item.strip() for item in self.ini_config.get(MODEL_CFG, "black_list", fallback="").split(",")
+                           if not not item.strip()]
         logging.warning("模型黑名单配置：{}".format(self.black_list))
 
         self.white_list = [item.strip() for item in self.ini_config.get(MODEL_CFG, "white_list", fallback="").split(",")
@@ -57,6 +84,7 @@ class ModelConfigLoad(object):
         self.thresh_user = float(self.ini_config.get(MODEL_CFG, "thresh_user", fallback=0.8))
         self.thresh_model = float(self.ini_config.get(MODEL_CFG, "thresh_model", fallback=0)) or self.thresh_user
         self.thresh_ai = float(self.ini_config.get(MODEL_CFG, "thresh_ai", fallback=0)) or self.thresh_user
+        self.thresh_ai = float(self.ini_config.get(MODEL_CFG, "thresh_ai", fallback=0)) or self.thresh_user
 
         # self.relative_path = self.ini_config.get(MODEL_CFG, "relative_path", fallback="")
         self.train_type = self.ini_config.get(MODEL_CFG, "train_type", fallback="")
@@ -64,11 +92,16 @@ class ModelConfigLoad(object):
         # 子模型配置参数， 按照列表方式初始化
         self.sub_model_cfg = []
         self._load_sub_model_cfg()
-
-        # 进入子模型之前扩展像素，可能配置一个值，也可能配置四个值，兼容
-        self.padding_pixel = [int(item) for item in self.ini_config.get(MODEL_CFG, "padding_pixel", fallback="0").split(",")]
+        self.expand_type = int(self.ini_config.get(MODEL_CFG, "expand_type", fallback=0))
+        # 进入子模型之前扩展像素，可能配置一个值，也可能配置四个值，兼容，按照上下左右的顺序配置
+        self.padding_pixel = [int(item) for item in
+                              self.ini_config.get(MODEL_CFG, "padding_pixel", fallback="0").split(",")]
         if len(self.padding_pixel) < 4:
             self.padding_pixel = self.padding_pixel * 4
+        # 进入子模型之前扩展的像素
+        self.padding_rate = float(self.ini_config.get(MODEL_CFG, "padding_rate", fallback="0"))
+        # 模糊门限
+        self.vague_min = float(self.ini_config.get(MODEL_CFG, "vague_min", fallback="0"))
 
         # 几何参数特征构造
         self.bbox_geo_feature = self._get_bbox_geo_params()
@@ -82,6 +115,19 @@ class ModelConfigLoad(object):
 
         # top框参数配置，例如杆号 需要返回 方差最大的 top5 号牌框，默认-1表示不筛选
         self.bbox_top = int(self.ini_config.get(MODEL_CFG, "bbox_top", fallback=-1))
+
+        # 单图内预测merge开关，默认false
+        self.merge_one_img = str(self.ini_config.get(MODEL_CFG, "merge_one_img", fallback="true")).lower() == "true"
+
+        # 中间结果是否输出，当有分类子模型的时候，可能输出中间结果，默认不输出
+        self.out = str(self.ini_config.get(MODEL_CFG, "out", fallback="false")).lower() == "true"
+
+        # y1_thresh  杆号公里标场景下，判断y1和高比例的门限参数
+        self.y1_thresh = float(self.ini_config.get(MODEL_CFG, "y1_thresh", fallback=0.67))
+
+        # 子模型字典，key 是 主模型检测的结果ai_name，value是子模型
+        self.sub_model_dict = {}
+
         logging.warning("配置文件读取完成")
 
     def _load_centernet_params(self):
@@ -92,6 +138,7 @@ class ModelConfigLoad(object):
             'std': [.0, .0, .0],
             'dataset': '',
             'num_classes': 0,
+            'arch': ''        # 网络结构
         }
         if SECTION_CENTERNET not in self.ini_config.sections():
             return centernet_params
@@ -107,6 +154,8 @@ class ModelConfigLoad(object):
             centernet_params['dataset'] = str(params['dataset'])
         if 'num_classes' in params.keys():
             centernet_params['num_classes'] = int(params['num_classes'])
+        if 'arch' in params.keys():
+            centernet_params['arch'] = str(params['arch'])
 
         return centernet_params
 
@@ -138,14 +187,16 @@ class ModelConfigLoad(object):
             logging.warning("发现子模型 {}".format(section))
             # 配置参数转换成字典
             config_params = dict(self.ini_config.items(section))
-            if not config_params.get(MODEL_CFG, "") or not config_params.get(MODEL_NAME, ""):
-                logging.error("模型{}没有配置子模型{}的路径或者名称文件，将不会加载".format(self.model_type, section))
-                continue
+            # if not config_params.get(MODEL_CFG, "") or not config_params.get(MODEL_NAME, ""):
+            #     logging.error("模型{}没有配置子模型{}的路径或者名称文件，将不会加载".format(self.model_type, section))
+            #     continue
 
             # 更新为绝对路径
             config_params.update({
-                MODEL_CFG: os.path.join(self.model_path, config_params[MODEL_CFG]),
-                MODEL_NAME: os.path.join(self.model_path, config_params[MODEL_NAME]),
+                MODEL_CFG: os.path.join(self.model_path, config_params.get(MODEL_CFG, "")),
+                MODEL_NAME: os.path.join(self.model_path, config_params.get(MODEL_NAME, "")),
+                # 如果是直接指定子模型
+                "ai_type": config_params.get("ai_type", ""),
                 "detect_name": config_params.get("detect_name", "")
             })
             self.sub_model_cfg.append(config_params)
@@ -167,9 +218,11 @@ class ModelConfigLoad(object):
                     logging.error("{}文件的{}配置必须携带detect_name配置".format(self.ini_cfg_path, section_name))
                     continue
 
-                self.bbox_geo_feature_for_name[detect_name] = geo_params
-
-
+                # 支持列表配置
+                detect_name_list = detect_name.split(",")
+                for name in detect_name_list:
+                    logging.warning("加载支持{}的几何参数".format(name))
+                    self.bbox_geo_feature_for_name[name] = geo_params
 
     def _get_bbox_geo_params(self, section_name=SECTION_BBOX):
         """
@@ -188,13 +241,16 @@ class ModelConfigLoad(object):
             'detect_name': None,
             'w_range': None,
             'h_range': None,
+            'w_ratio_range': None,
+            'h_ratio_range': None,
             'h_to_w_range': None,
             's_range': None,
-            'edge_distance_th': None
+            'edge_distance_th': None,
+
         }
         try:
             if section_name not in self.ini_config.sections():
-                return geo_params
+                return None
 
             params = dict(self.ini_config.items(section_name))
             for k, v in params.items():
@@ -205,19 +261,39 @@ class ModelConfigLoad(object):
             if 'detect_name' in params.keys():
                 geo_params['detect_name'] = params['detect_name']
 
-            # 宽度范围
-            if 'w_th_min' in params.keys() and 'w_th_max' in params.keys():
-                geo_params['w_range'] = [float(params['w_th_min']), float(params['w_th_max'])]
-            # 高度范围
-            if 'h_th_min' in params.keys() and 'h_th_max' in params.keys():
-                geo_params['h_range'] = [float(params['h_th_min']), float(params['h_th_max'])]
-            # 宽高比范围
-            if 'hw_ratio_th_min' in params.keys() and 'hw_ratio_th_max' in params.keys():
-                geo_params['h_to_w_range'] = [float(params['hw_ratio_th_min']), float(params['hw_ratio_th_max'])]
+            # 面积范围
+            if 's_th_min' in params.keys() or 's_th_max' in params.keys():
+                geo_params['s_range'] = [float(params.get('s_th_min', "-inf")), float(params.get('s_th_max', 'inf'))]
 
-            # 到边框最小距离判断
+            # 宽度范围，可能只有一半区间
+            if 'w_th_min' in params.keys() or 'w_th_max' in params.keys():
+                geo_params['w_range'] = [float(params.get('w_th_min', "-inf")), float(params.get('w_th_max', 'inf'))]
+
+            # 高度范围
+            if 'h_th_min' in params.keys() or 'h_th_max' in params.keys():
+                geo_params['h_range'] = [float(params.get('h_th_min', "-inf")), float(params.get('h_th_max', "inf"))]
+
+            # 宽度和高宽占整体比例范围
+            if 'w_ratio_th_min' in params.keys() or 'w_ratio_th_max' in params.keys():
+                geo_params['w_ratio_range'] = [float(params.get('w_ratio_th_min', "-inf")), float(params.get('w_ratio_th_max', "inf"))]
+
+            if 'h_ratio_th_min' in params.keys() or 'h_ratio_th_max' in params.keys():
+                geo_params['h_ratio_range'] = [float(params.get('w_ratio_th_min', "-inf")), float(params.get('w_ratio_th_max', "inf"))]
+
+            # 宽高比范围
+            if 'hw_ratio_th_min' in params.keys() or 'hw_ratio_th_max' in params.keys():
+                geo_params['h_to_w_range'] = [float(params.get('hw_ratio_th_min', "-inf")),
+                                              float(params.get('hw_ratio_th_max', "inf"))]
+
+            # 到边框最小距离判断，支持四个数字配置一样，  edge_distance_th=5
+            # 或者四个数字不一样，按照上下左右的顺序配置   edge_distance_th=5,3,2,0
             if 'edge_distance_th' in params.keys():
-                geo_params['edge_distance_th'] = int(params['edge_distance_th'])
+                edge_th_list = params['edge_distance_th'].split(",")
+                if len(edge_th_list) >= 4:
+                    geo_params['edge_distance_th'] = tuple([int(item.strip()) for item in edge_th_list][:4])
+                else:
+                    # 全部转换成数组
+                    geo_params['edge_distance_th'] = tuple([int(params['edge_distance_th']), ] * 4)
 
         except Exception as e:
             logging.warning("模型{}解析几何参数配置异常:{}".format(self.model_file, e), exc_info=1)
@@ -254,6 +330,14 @@ class ModelConfigLoad(object):
         return self.ini_config.items(MODEL_PARAMS_CFG)
 
     @property
+    def params(self):
+        """
+        参数配置
+        :return:
+        """
+        return dict(self.update_config_items)
+
+    @property
     def save_path(self):
         save_path = self.ini_config.get(MODEL_CFG, "save_path", fallback="")
         # 如果没有配置，取模型当前路径
@@ -285,6 +369,7 @@ class ModelConfigLoad(object):
 
 if __name__ == '__main__':
     from GTAI.resnet50.config import Config
+
     model_config = ModelConfigLoad("/data2/model/ganhao_2c")
     print("black_list", model_config.black_list)
     print("子模型配置", model_config.sub_model_cfg)

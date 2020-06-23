@@ -5,6 +5,7 @@ Date:2019/7/19 0019上午 9:35
 自定义bbox，定义两个bbox相等 和 merge等功能
 """
 from copy import deepcopy
+import math
 
 # 框合并策略
 # 1、先按照iou消除冗余框
@@ -25,50 +26,202 @@ class BBox(list):
     【/】 a / b 求两个bbox的iou，只需要四元组参数 x1, y1, x3, y3
     """
     
-    def __init__(self, *args, iou_thresh=DEFALT_IOU_THRESH, intersection_thresh=DEFAULT_INTER_THRESH, **kwargs):
+    def __init__(self, *args, iou_thresh=DEFALT_IOU_THRESH, intersection_thresh=DEFAULT_INTER_THRESH, s_thresh=1.7, **kwargs):
         """
-        初始化BBOX，全量参数为x1, y1, x3, y3, class_name, confidence，至少要保证有4元组
+        全量如下，class_type为分类大的类型， class_confidence为分类置信度， number为杆号号码，后面可以无限追加，含义在调用处自己约束
+        x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
         定义案例如下
         bbox2 = BBox((200, 200, 300, 300, "test1", 0.8,  "cap"))
         bbox3 = BBox((200, 200, 300, 300, "test1", 0.8))
         bbox4 = BBox((210, 210, 320, 320))
         :param args: 初始化元组参数
         :param iou_thresh: iou门限
+        :param intersection_thresh: 交集面积除以最小面积的比例
+        :param s_thresh: iou门限
         :param kwargs:保留参数，暂时不使用
         """
-        # x1, y1, x3, y3, class_name, confidence
-        # if len(*args) < 4:
-        #     raise Exception("must init for x1, y1, x3, y3, but given {}".format(*args))
-        super(BBox, self).__init__(*args)
-        value = []
+        # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
         if len(args) > 0:
-            value = args[0]
-        if len(value) < 6:
-            self.x1 = 0
-            self.x2 = 0
-            self.y1 = 0
-            self.y2 = 0
-            self.class_name = ""
-            self.confidence = 0
+            value = list(args[0])
         else:
-            self.x1 = value[0]
-            self.y1 = value[1]
-            self.x2 = value[2]
-            self.y2 = value[3]
-            # 名称
-            self.class_name = value[4]
-            # 置信度
-            self.confidence = value[5]
+            value = [0, 0, 0, 0, "", "", "", "", "", "", "", ""]
 
-        # 子模型分类置信度暂时不需要参考
-        # 类型
-        self.class_type = ""
-        if len(value) > 6:
-            self.class_type = value[6]
+        if len(value) < 6:
+            value = [0, 0, 0, 0, "", ""]
+
+        # 补齐 class_type
+        if len(value) < 7:
+            value.append("")
+
+        # class_confidence
+        if len(value) < 8:
+            value.append("0")
+
+        # 补齐 number
+        if len(value) < 9:
+            value.append("")
+
+        # 补齐 ai_name
+        if len(value) < 10:
+            value.append("")
+
+        # 补齐 detect_info
+        if len(value) < 11:
+            value.append("")
+
+        # 补齐 model_info
+        if len(value) < 12:
+            value.append("")
+
+        args = [value, ]
+        super(BBox, self).__init__(*args)
 
         # iou门限
         self.iou_thresh = iou_thresh
         self.intersection_thresh = intersection_thresh
+        self.s_thresh = s_thresh
+
+    def dict(self):
+        return {
+            "x1": self.x1,
+            "y1": self.y1,
+            "x2": self.x2,
+            "y2": self.y2,
+            # 冗余数据，外面按照name来处理
+            "name": self.class_name,
+            "class_name": self.class_name,
+            "confidence": self.confidence,
+            "class_confidence": self.class_confidence,
+            "number": self.number,
+            "ai_name": self.ai_name,
+            # todo 检测信息和模型信息待补充
+            "detect_info": self.detect_info,
+            "model_info": self.model_info
+        }
+
+    def from_dict(self, **kwargs):
+        """
+        从字典更新值进来
+        :param kwargs:
+        :return:
+        """
+        for key in (
+                "x1", "y1", "x2", "y2", "class_name",
+                "confidence", "class_type", "class_confidence",
+                "number", "ai_name"):
+            if key in kwargs.keys():
+                if key in ("x1", "y1", "x2", "y2", "confidence","class_confidence"):
+                    self.__setattr__(key, float(kwargs.get(key) or 0))
+                else:
+                    self.__setattr__(key, kwargs.get(key))
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def x1(self):
+        return self[0]
+
+    @x1.setter
+    def x1(self, value):
+        self[0] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def y1(self):
+        return self[1]
+
+    @y1.setter
+    def y1(self, value):
+        self[1] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def x2(self):
+        return self[2]
+
+    @x2.setter
+    def x2(self, value):
+        self[2] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def y2(self):
+        return self[3]
+
+    @y2.setter
+    def y2(self, value):
+        self[3] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def class_name(self):
+        return self[4]
+
+    @class_name.setter
+    def class_name(self, value):
+        self[4] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def confidence(self):
+        return self[5]
+
+    @confidence.setter
+    def confidence(self, value):
+        self[5] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def class_type(self):
+        return self[6]
+
+    @class_type.setter
+    def class_type(self, value):
+        self[6] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def class_confidence(self):
+        return self[7]
+
+    @class_confidence.setter
+    def class_confidence(self, value):
+        self[7] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def number(self):
+        return self[8]
+
+    @number.setter
+    def number(self, value):
+        self[8] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def ai_name(self):
+        return self[9]
+
+    @ai_name.setter
+    def ai_name(self, value):
+        self[9] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def detect_info(self):
+        return self[10]
+
+    @detect_info.setter
+    def detect_info(self, value):
+        self[10] = value
+
+    # x1, y1, x3, y3, class_name, confidence，class_type, class_confidence, number, ai_name, detect_info, model_info
+    @property
+    def model_info(self):
+        return self[11]
+
+    @model_info.setter
+    def model_info(self, value):
+        self[11] = value
 
     @property
     def w(self):
@@ -97,6 +250,87 @@ class BBox(list):
             return 0
         return self.w * self.h
 
+    def expand_to_square(self, expand_type=0, w=0, h=0, **kwargs):
+        """
+        扩展为正方形
+        :param expand_type: 扩展类型  1-固定左上，扩充右边和下边  2-固定中心  0-不处理
+        """
+        # 不处理
+        if not expand_type:
+            return self
+
+        # 正方形边长
+        a = max(self.w, self.h)
+
+        # 固定左上
+        if expand_type == 1:
+            result = [self.x1, self.y1, self.x1 + a, self.y1 + a]
+        # 固定中心点
+        elif expand_type == 2:
+            # 中心点
+            center = ((self.x1+self.x2)/2, (self.y1+self.y2)/2)
+            result = [max(0, int(center[0]-a/2)),
+                      max(0, int(center[1]-a/2)),
+                      min(w or math.inf, int(center[0]+a/2)),
+                      min(h or math.inf, int(center[1]+a/2))]
+        else:
+            raise Exception("错误的配置参数，无法扩展为正方形：{}".format(expand_type))
+
+        # 其他属性不变
+        for i in range(4, self.__len__()):
+            result.append(self[i])
+
+        return BBox(result, iou_thresh=self.iou_thresh)
+
+    def expand_by_padding(self, up, down, left, right, w=0, h=0, *args, **kwargs):
+        """
+        扩展倍率
+        :param up: 上面扩展
+        :param down: 下面扩展
+        :param left: 左面扩展
+        :param right: 右面扩展
+        :param w: 宽极限
+        :param h: 高极限
+        :return:
+        """
+        # 新的x1, y1 ,x3, y3
+        result = [
+            max(0, int(self.x1 - left)), max(0, int(self.y1 - up)),
+            min(w, int(self.x2 + right)), min(h, int(self.y2 + down))
+        ]
+        # 其他属性不变
+        for i in range(4, self.__len__()):
+            result.append(self[i])
+
+        return BBox(result, iou_thresh=self.iou_thresh)
+
+    def expand_by_rate(self, rate, w, h):
+        """
+        扩展倍率
+        :param rate: 扩展倍率
+        :param w: 宽极限
+        :param h: 高极限
+        :return:
+        """
+        # 中心点x坐标
+        x_center = (self.x2 + self.x1)/2
+        # 中心点y坐标
+        y_center = (self.y2 + self.y1)/2
+        # 左右变换后的宽度
+        _w = self.w * rate / 2
+        # 上下变换后的高度
+        _h = self.h * rate / 2
+        # 新的x1, y1 ,x3, y3
+        result = [
+            max(0, int(x_center-_w)), max(0, int(y_center-_h)),
+            min(w, int(x_center+_w)), min(h, int(y_center+_h))
+        ]
+        # 其他属性不变
+        for i in range(4, self.__len__()):
+            result.append(self[i])
+
+        return BBox(result, iou_thresh=self.iou_thresh)
+
     def judge_by_edge(self, w, h, edge_distance_th=None, x_start=0, y_start=0, **kwargs):
         """
         到边框的判断
@@ -108,16 +342,21 @@ class BBox(list):
         :return:
         """
         # 不需要判断
-        if edge_distance_th is None or not isinstance(edge_distance_th, (int, float)):
+        if edge_distance_th is None or not isinstance(edge_distance_th, tuple):
             return True
 
-        # 需要判断
-        return not (self.x1 - x_start <= edge_distance_th  or w - self.x2 <= edge_distance_th
-               or self.y1 - y_start <= edge_distance_th or h - self.y2 <= edge_distance_th)
+        # 需要判断， 按照上下左右的顺序判断
+        return all([self.y1 - y_start >= edge_distance_th[0],
+                    h - self.y2 >= edge_distance_th[1],
+                    self.x1 - x_start >= edge_distance_th[2],
+                    w - self.x2 >= edge_distance_th[3]
+                    ])
 
-    def judge_by_geo(self, w_range=None, h_range=None, h_to_w_range=None, s_range=None, **kwargs):
+    def judge_by_geo(self, w, h, w_range=None, h_range=None, h_to_w_range=None, s_range=None, **kwargs):
         """
         图形几何条件判断
+        :param w:  整体宽带
+        :param h:  整图高度
         :param h_range:  高度范围
         :param w_range:
         :param s_range: 面积区间，闭区间
@@ -139,6 +378,15 @@ class BBox(list):
 
         # 纵横比判断
         if isinstance(h_to_w_range, (tuple, list)) and len(h_to_w_range) >= 2 and not (h_to_w_range[0] <= self.hTow<= h_to_w_range[1]):
+            return False
+
+        # 宽度比例
+        w_ratio_th_min = kwargs.get("w_ratio_th_min", None)
+        if isinstance(w_ratio_th_min, (tuple, list)) and len(w_ratio_th_min) >= 2 and not (w_ratio_th_min[0] <= self.w/w <= w_ratio_th_min[1]):
+            return False
+
+        h_ratio_th_min = kwargs.get("h_ratio_th_min", None)
+        if isinstance(h_ratio_th_min, (tuple, list)) and len(h_ratio_th_min) >= 2 and not (h_ratio_th_min[0] <= self.h/h <= h_ratio_th_min[1]):
             return False
 
         return True
@@ -222,7 +470,7 @@ class BBox(list):
         :return:
         """
         if self.intersection_thresh is not None:
-            return self.__floordiv__(other) >= self.intersection_thresh
+            return self.__floordiv__(other) >= self.intersection_thresh and max(self.S, other.S) / min(self.S, other.S) >= self.s_thresh
 
         return self.x1 >= other.x1 and self.y1 >= other.y1 and self.x2 <= other.x2 and self.y2 <= other.y2
 
@@ -305,19 +553,21 @@ class BBox(list):
         if not self.__eq__(other):
             raise Exception("not equal for bbox and other, cannot add")
 
-        # 1、同种器件，不考虑类别，先按照iou消除冗余框
+        # 先判断框是不是包含内部，再判断IOU
+        # 1 框包含到另外一个框里面
+        if self <= other or other <= self:
+            return self._merge_thresh_max(other)
+            # # 2 （1）同一器件同种类别完全被包含的框消除
+            # if self.class_name == other.class_name:
+            #     return self._merge_range_max(other)
+            # # 2 （2）同一器件不同类别被包含的框保留置信度大的
+            # else:
+            #     return self._merge_thresh_max(other)
+
+        # 2、同种器件，不考虑类别，先按照iou消除冗余框
         if self.__truediv__(other) >= self.iou_thresh:
             # merge两个框
             return self._merge_range_max(other)
-
-        # 2 框包含到另外一个框里面
-        if self <= other or other <= self:
-            # 2 （1）同一器件同种类别完全被包含的框消除
-            if self.class_name == other.class_name:
-                return self._merge_range_max(other)
-            # 2 （2）同一器件不同类别被包含的框保留置信度大的
-            else:
-                return self._merge_thresh_max(other)
 
         raise Exception("没有定义运算规则{}-{}".format(self, other))
 
@@ -329,16 +579,74 @@ class BBoxes(list):
     【-】 a - b 列表a中不在b中的元素
     【|】 a | b 列表a和列表b求并集，iou小于0.5的合并
     """
-    def __init__(self, *args, iou_thresh=DEFALT_IOU_THRESH, intersection_thresh=DEFAULT_INTER_THRESH, **kwargs):
+    def __init__(self, *args, iou_thresh=DEFALT_IOU_THRESH, intersection_thresh=DEFAULT_INTER_THRESH, s_thresh=1.7, **kwargs):
         # 校验类型
         args = list(*args)
         for i in range(len(args)):
             if not isinstance(args[i], BBox):
                 # logging.warning("{}不是BBox类型，尝试强制转换，可能出错".format(args[i]))
-                args[i] = BBox(args[i], iou_thresh=iou_thresh, intersection_thresh=intersection_thresh, **kwargs)
+                args[i] = BBox(args[i], iou_thresh=iou_thresh, intersection_thresh=intersection_thresh, s_thresh=s_thresh, **kwargs)
         super(BBoxes, self).__init__(args)
         self.iou_thresh = iou_thresh
         self.intersection_thresh = intersection_thresh
+        self.s_thresh = s_thresh
+        # 已经merge过的列表
+        self._has_merged_bboxes = []
+
+    def sorted(self, key=None, reverse=True):
+        """
+        排序，默认按照置信度排序,从高往低
+        :param key:
+        :param reverse:
+        :return:
+        """
+        key = key or (lambda item: item.confidence)
+        return BBoxes(sorted(self, key=key, reverse=reverse))
+
+    def merge_each_other(self):
+        # 先按照置信度排序
+        sorted_bboxes = self.sorted(reverse=True)
+        bboxes = BBoxes()
+        has_merged_bboxes = []
+        for index_main, bbox_main in enumerate(sorted_bboxes):
+            # 已经被merge过的框不再添加
+            if bbox_main in has_merged_bboxes:
+                continue
+
+            # 遍历之后的bbox，相同的则merge
+            for index, bbox in enumerate(sorted_bboxes[index_main+1:]):
+                if bbox_main == bbox:
+                    bbox_main = bbox_main + bbox
+                    has_merged_bboxes.append(bbox)
+
+            # 合并完之后添加
+            bboxes.append(bbox_main)
+
+        return bboxes
+
+    def append_dict(self, **kwargs):
+        """
+        从字典导入bbox
+        :param kwargs:
+        :return:
+        """
+        bbox = BBox()
+        bbox.from_dict(**kwargs)
+        self.append(bbox)
+
+    def __add__(self, other):
+        return self.extend(other)
+
+    def extend(self, other):
+        """扩展"""
+        # 如果other不符合预期
+        if not other or not isinstance(other, BBoxes) or len(other) == 0:
+            return self
+
+        for bbox in other:
+            self.append(bbox)
+
+        return self
         
     def append(self, *args, **kwargs):
         """
@@ -355,17 +663,14 @@ class BBoxes(list):
         """
         # 支持第一个参数解析
         arg = args[0]
+        # 不需要处理
         if not arg:
-            raise Exception("不能添加空的BBox")
+            return
 
         # 如果类型不匹配，强制转换
         if not isinstance(arg, BBox):
             # logging.warning("{}不是BBox类型，尝试强制转换，可能出错".format(arg))
-            arg = BBox(arg, iou_thresh=self.iou_thresh, intersection_thresh=self.intersection_thresh)
-
-        # # 几何参数过滤 todo 待算法确定细节
-        # if not arg.judge_by_geo(s_range=self.s_range, w_to_h=self.w_to_h):
-        #     return
+            arg = BBox(arg, iou_thresh=self.iou_thresh, intersection_thresh=self.intersection_thresh, s_thresh=self.s_thresh)
 
         super(BBoxes, self).append(arg)
 
@@ -597,6 +902,10 @@ if __name__ == '__main__':
 
     b1 = BBoxes( [[3233, 3480, 3474, 3812, 'pemissing1', 0.59], [3233, 3480, 3474, 3812, 'penormal1', 0.47]])
     b2 = BBoxes([[3214, 3478, 3467, 3488, 'penormal1', 0.31], [3236, 3500, 3471, 3811, 'pemissing1', 0.45], [3236, 3500, 3471, 3811, 'penormal1', 0.61]])
+
+    print("b1 merge", b1.merge_each_other())
+    print("b2 merge", b2.merge_each_other())
+
     print(b1 | b2)
     print(b2 | b1)
 
@@ -607,6 +916,16 @@ if __name__ == '__main__':
 
     # print('sus floordiv',
     #       BBox([1352, 1072, 1407, 1621, 'susnormal', 0.39]) // BBox([1352, 1399, 1389, 1623, 'susnormal', 0.15]))
+
+    # 放大缩小
+    a=BBox([100, 200, 300, 400, 'penormal1', 0.61])
+    b = a.expand_by_rate(1.2, 4000, 4000)
+    print("{}变成了{}".format(a.dict(), b.dict()))
+
+    a = BBox([2361, 3923, 2440, 3979, 'penormal1', 0.61])
+    b = a.expand_by_rate(1.2, 4000, 4000)
+    print("{}变成了{}".format(a.dict(), b.dict()))
+
 
 
 

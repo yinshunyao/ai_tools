@@ -33,3 +33,13 @@ UNET_SAVE_PATH = "save_path"
 SECTION_BBOX="bbox"
 
 SECTION_CENTERNET = "centernet"
+
+
+class DetectType:
+    """检测类型，主要针对子模型返回结果处理"""
+    # 杆号检测
+    ganhao = 0
+    # 分类检测
+    classify = 1
+    # 未检测
+    not_detect = -1

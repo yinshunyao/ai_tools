@@ -14,8 +14,6 @@ import time
 from ctypes import *
 from GTUtility.GTBase.thread_pool import ThreadPool
 
-
-
 headerLength = 100
 
 
@@ -175,41 +173,68 @@ class resolvemv_ope:
         thread_pool.shutdown()
 
 
-def export(mvFile, mvindexFile, base_dir, start=1, end=None, max_workers=5):
+class NumEndException(Exception):
+    pass
+
+
+def export(mv_file, idx_file, dst_path, start=0, end=0, max_workers=5):
     """
-    根据mv和mvindex导出图片
-    :param mvFile: mv文件的绝对路径
-    :param mvindexFile: mvindex的绝对路径
-    :param base_dir: 要导出到哪个文件夹里面
-    :return:导出的图片总数
+
+    :param mv_file: mv所在目录
+    :param idx_file: idx所在目录
+    :param dst_path: 结果存放目录
+    :param start:
+    :param end:
+    :param max_workers:
+    :return:
     """
-    re = resolvemv_ope(mvFile, mvindexFile)  # 实例化对象
-    Num = re.getFrameNum()  # 获取总数
-    end = min(end or Num, Num) + 1  # 导出多少张,不传end意味着导出全部
+    mv_op = resolvemv_ope(mv_file, idx_file)  # 实例化对象
+    nums = mv_op.getFrameNum()  # 获取总数
+    end = end or nums  # 导出多少张,不传end意味着导出全部
     logging.warning("总共有:{}张图片".format(end - start))
-    if not os.path.exists(base_dir):  # 没有目录则创建
-        os.mkdir(base_dir)
+    if not os.path.exists(dst_path):  # 没有目录则创建
+        os.makedirs(dst_path)
     thread_pool = ThreadPool(max_workers=max_workers)  # 线程池的方式
     # 分拆
     width = (end - start) // max_workers or 1  # 每个分支多少张图片
     logging.warning("总计{}，每组{}个".format(end - start, width))
     for i in range(start, end, width):
         logging.warning("拆分提图：[{},{})".format(i, min(end, i + width)))
-        thread_pool.submit(re.save_img_list, i, i + width, base_dir, 3)
+        thread_pool.submit(mv_op.save_img_list, i, i + width, dst_path, 3)
     thread_pool.shutdown()
     return end - start
 
 
 if __name__ == '__main__':
     t1 = time.time()
-    base = r"E:\2019.11.22_唐跃明_侯马数据\2C\2019.11.11大西高铁2C\20191111_125807684_大西高铁_太原南_永济北_1"
-    mv_file = os.path.join(base, "C2_A_0_2_20191111_125807_684.MV")
-    mvindexFile = os.path.join(base, "C2_A_0_2_20191111_125807_684.MV.IDX")
-    base_dir = os.path.join(base, "C2_A_0_2_20191111_125807_684")
-    Num = export(mvFile=mv_file,
-                 mvindexFile=mvindexFile,
-                 base_dir=base_dir,
-                 max_workers=50)
+    # src_path = r"E:\2018年线路数据拷贝\京沪高铁+合蚌高铁\5月份\北京-上海 上下行"
+    src_path = r"R:\data\京沪高铁+合蚌高铁-5月份\CR400BF-5025_2018052609002145"
+    dst_path = r"F:\京沪高铁+合蚌高铁-5月份"
+    total, num = 0, 0
+    a = 0
+    try:
+        for root, dirs, files in os.walk(src_path):
+            print("export image for :", root)
+            for f in files:
+                if f.endswith(".MV"):
+                    mv_file = os.path.join(root, f)
+                    b=os.path.basename(mv_file).split("_")[3]
+                    print("b:{},type:{}".format(b,type(b)))
+                    # if os.path.basename(mv_file).split("_")[3] != 2:
+                    #     continue
+                    idx_file = mv_file + ".IDX"
+                    print(mv_file, idx_file)
+                    dst_dir = os.path.join(dst_path, root[len(src_path) + 1:])
+                    # num = export(mv_file, idx_file, dst_dir, max_workers=50)
+                    total += num
+                    a += 1
+    except NumEndException as e:
+        num = e.message
+        total += int(num)
+    except Exception as e:
+        print(e)
+
     t2 = time.time()
     t = t2 - t1
-    print("总共导出{}张图片,耗时:{}秒,平均每张图片:{}毫秒".format(Num, t, (t / Num) * 1000))
+    print("a:{}".format(a))
+    print("总共导出{}张图片,耗时:{}秒,平均每张图片:{}毫秒".format(total, t, (t / total) * 1000))
